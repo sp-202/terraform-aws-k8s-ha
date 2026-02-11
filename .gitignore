@@ -1,0 +1,10 @@
+# .gitignore
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+.terraform.lock.hcl
+k3s.yaml
+kubeconfig
+*.pem
+.DS_Store
