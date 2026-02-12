@@ -43,11 +43,32 @@ resource "aws_instance" "master" {
               curl -sfL https://get.k3s.io | K3S_TOKEN=${random_password.k3s_token.result} sh -s - server \
                 --cluster-init \
                 --tls-san $PUBLIC_IP \
-                --node-name k3s-master \
-                --node-taint critical-only=false:NoSchedule-
+                --tls-san $PUBLIC_IP \
+                --node-name k3s-master
 
               # Wait for k3s to be ready
               until [ -f /etc/rancher/k3s/k3s.yaml ]; do sleep 2; done
+
+              # Apply Master Labels (must be done after node registration due to security restrictions)
+              export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+              until kubectl get node k3s-master; do sleep 5; done
+              kubectl label node k3s-master node-role.kubernetes.io/master=true node-role.kubernetes.io/control-plane=true --overwrite
+
+              # Background job to label workers as they join
+              cat <<JOB > /usr/local/bin/k3s-worker-labeler.sh
+              #!/bin/bash
+              export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+              while true; do
+                 # Label nodes starting with 'k3s-worker' that lack the worker role label
+                 for node in \$(kubectl get nodes -l '!node-role.kubernetes.io/worker' -o jsonpath='{.items[*].metadata.name}' | tr ' ' '\n' | grep '^k3s-worker'); do
+                    kubectl label node \$node node-role.kubernetes.io/worker=true --overwrite
+                    echo "Labeled \$node as worker"
+                 done
+                 sleep 15
+              done
+              JOB
+              chmod +x /usr/local/bin/k3s-worker-labeler.sh
+              nohup /usr/local/bin/k3s-worker-labeler.sh > /var/log/k3s-worker-labeler.log 2>&1 &
               
               # Copy config for ubuntu user
               mkdir -p /home/ubuntu/.kube
@@ -125,10 +146,10 @@ resource "aws_launch_template" "worker" {
 }
 
 resource "aws_autoscaling_group" "workers" {
-  name             = "k3s-workers-asg"
-  desired_capacity = var.worker_count
-  min_size         = var.worker_count
-  max_size         = var.worker_count
+  name                = "k3s-workers-asg"
+  desired_capacity    = var.worker_count
+  min_size            = var.worker_count
+  max_size            = var.worker_count
   vpc_zone_identifier = [aws_subnet.private.id, aws_subnet.private_2.id]
 
   mixed_instances_policy {
@@ -147,7 +168,7 @@ resource "aws_autoscaling_group" "workers" {
 
     instances_distribution {
       on_demand_base_capacity                  = 0
-      on_demand_percentage_above_base_capacity = 0 
+      on_demand_percentage_above_base_capacity = 0
       spot_allocation_strategy                 = "price-capacity-optimized"
     }
   }

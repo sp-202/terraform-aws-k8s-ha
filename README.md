@@ -81,3 +81,13 @@ terraform destroy -auto-approve
 - `variables.tf`: Configuration variables.
 - `outputs.tf`: Terraform outputs.
 - `deploy.sh`: Orchestration script.
+
+## 🛠 Optional Components
+
+### Code Server (VS Code in Browser)
+The `main-code-server.tf` file provisions a standalone VS Code server instance. By default, this file is disabled to prevent accidental deployment.
+
+- **To Enable**: Rename `main-code-server.tf.disabled` to `main-code-server.tf`.
+- **To Disable**: Rename `main-code-server.tf` to `main-code-server.tf.disabled`.
+
+Terraform automatically ignores files that do not end with `.tf`.
