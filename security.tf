@@ -120,3 +120,47 @@ resource "aws_security_group_rule" "worker_egress_all" {
   cidr_blocks       = ["0.0.0.0/0"]
   security_group_id = aws_security_group.worker_sg.id
 }
+
+# Master: Allow HTTP
+resource "aws_security_group_rule" "master_http_ingress" {
+  type              = "ingress"
+  from_port         = 80
+  to_port           = 80
+  protocol          = "tcp"
+  cidr_blocks       = ["0.0.0.0/0"]
+  security_group_id = aws_security_group.master_sg.id
+  description       = "HTTP from anywhere"
+}
+
+# Master: Allow HTTPS
+resource "aws_security_group_rule" "master_https_ingress" {
+  type              = "ingress"
+  from_port         = 443
+  to_port           = 443
+  protocol          = "tcp"
+  cidr_blocks       = ["0.0.0.0/0"]
+  security_group_id = aws_security_group.master_sg.id
+  description       = "HTTPS from anywhere"
+}
+
+# Worker: Allow HTTP
+resource "aws_security_group_rule" "worker_http_ingress" {
+  type              = "ingress"
+  from_port         = 80
+  to_port           = 80
+  protocol          = "tcp"
+  cidr_blocks       = ["0.0.0.0/0"]
+  security_group_id = aws_security_group.worker_sg.id
+  description       = "HTTP from anywhere"
+}
+
+# Worker: Allow HTTPS
+resource "aws_security_group_rule" "worker_https_ingress" {
+  type              = "ingress"
+  from_port         = 443
+  to_port           = 443
+  protocol          = "tcp"
+  cidr_blocks       = ["0.0.0.0/0"]
+  security_group_id = aws_security_group.worker_sg.id
+  description       = "HTTPS from anywhere"
+}

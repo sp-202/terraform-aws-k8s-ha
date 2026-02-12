@@ -16,8 +16,9 @@ resource "aws_instance" "master" {
 
   vpc_security_group_ids = [aws_security_group.master_sg.id]
 
+  # Master 80GB EBS Root Volume
   root_block_device {
-    volume_size = 30
+    volume_size = 80
     volume_type = "gp3"
   }
 
@@ -38,8 +39,13 @@ resource "aws_instance" "master" {
               echo "Detected Public IP: $PUBLIC_IP"
 
               echo "Installing K3s..."
-              curl -sfL https://get.k3s.io | K3S_TOKEN=${random_password.k3s_token.result} sh -s - server --cluster-init --tls-san $PUBLIC_IP
-              
+              # Added --node-name for clarity and --node-taint empty to ensure critical pods can deploy
+              curl -sfL https://get.k3s.io | K3S_TOKEN=${random_password.k3s_token.result} sh -s - server \
+                --cluster-init \
+                --tls-san $PUBLIC_IP \
+                --node-name k3s-master \
+                --node-taint critical-only=false:NoSchedule-
+
               # Wait for k3s to be ready
               until [ -f /etc/rancher/k3s/k3s.yaml ]; do sleep 2; done
               
@@ -64,6 +70,15 @@ resource "aws_launch_template" "worker" {
   instance_type = var.worker_instance_type
   key_name      = aws_key_pair.k3s_key.key_name
 
+  # Worker 80GB EBS Root Volume
+  block_device_mappings {
+    device_name = "/dev/sda1"
+    ebs {
+      volume_size = 80
+      volume_type = "gp3"
+    }
+  }
+
   network_interfaces {
     associate_public_ip_address = false
     security_groups             = [aws_security_group.worker_sg.id]
@@ -76,6 +91,10 @@ resource "aws_launch_template" "worker" {
               
               echo "Starting Worker User Data..."
 
+              # Fetch Instance ID for Unique Naming
+              TOKEN=$(curl -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+              INSTANCE_ID=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" -s http://169.254.169.254/latest/meta-data/instance-id)
+
               # Wait for master to be ready
               sleep 60
               
@@ -83,7 +102,9 @@ resource "aws_launch_template" "worker" {
               DEBIAN_FRONTEND=noninteractive apt-get install -y curl
 
               echo "Joining Cluster..."
-              curl -sfL https://get.k3s.io | K3S_URL=https://${aws_instance.master.private_ip}:6443 K3S_TOKEN=${random_password.k3s_token.result} sh -
+              curl -sfL https://get.k3s.io | K3S_URL=https://${aws_instance.master.private_ip}:6443 \
+                K3S_TOKEN=${random_password.k3s_token.result} sh -s - \
+                --node-name k3s-worker-$INSTANCE_ID
               
               echo "Worker User Data Complete."
               EOF
@@ -93,7 +114,7 @@ resource "aws_launch_template" "worker" {
     resource_type = "instance"
     tags = {
       Project = "k3s-cluster"
-      Name    = "k3s-worker-asg" # This tag will be propagated to instances
+      Name    = "k3s-worker-asg"
       Role    = "worker"
     }
   }
@@ -108,7 +129,6 @@ resource "aws_autoscaling_group" "workers" {
   desired_capacity = var.worker_count
   min_size         = var.worker_count
   max_size         = var.worker_count
-  # Updated to use both private subnets
   vpc_zone_identifier = [aws_subnet.private.id, aws_subnet.private_2.id]
 
   mixed_instances_policy {
@@ -118,27 +138,16 @@ resource "aws_autoscaling_group" "workers" {
         version            = "$Latest"
       }
 
-      # List of acceptable instance types for Spot
-      override {
-        instance_type = "r5.2xlarge"
-      }
-      override {
-        instance_type = "r5d.2xlarge"
-      }
-      override {
-        instance_type = "r5a.2xlarge"
-      }
-      override {
-        instance_type = "r4.2xlarge"
-      }
-      override {
-        instance_type = "m5.2xlarge" # Fallback if memory optimized are all out, though user asked for 64GB...
-      }
+      override { instance_type = "r5.2xlarge" }
+      override { instance_type = "r5d.2xlarge" }
+      override { instance_type = "r5a.2xlarge" }
+      override { instance_type = "r4.2xlarge" }
+      override { instance_type = "m5.2xlarge" }
     }
 
     instances_distribution {
       on_demand_base_capacity                  = 0
-      on_demand_percentage_above_base_capacity = 0 # 100% Spot Instances
+      on_demand_percentage_above_base_capacity = 0 
       spot_allocation_strategy                 = "price-capacity-optimized"
     }
   }
@@ -149,6 +158,5 @@ resource "aws_autoscaling_group" "workers" {
     propagate_at_launch = true
   }
 
-  # Ensure we wait for master to be fully up before launching workers
   depends_on = [aws_instance.master]
 }
