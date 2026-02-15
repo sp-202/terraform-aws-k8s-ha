@@ -20,6 +20,7 @@ resource "aws_instance" "master" {
   root_block_device {
     volume_size = 80
     volume_type = "gp3"
+    delete_on_termination = true
   }
 
   user_data = <<-EOF
@@ -97,6 +98,7 @@ resource "aws_launch_template" "worker" {
     ebs {
       volume_size = 80
       volume_type = "gp3"
+      delete_on_termination = true
     }
   }
 
@@ -148,8 +150,8 @@ resource "aws_launch_template" "worker" {
 resource "aws_autoscaling_group" "workers" {
   name                = "k3s-workers-asg"
   desired_capacity    = var.worker_count
-  min_size            = var.worker_count
-  max_size            = var.worker_count
+  min_size            = var.worker_min
+  max_size            = var.worker_max
   vpc_zone_identifier = [aws_subnet.private.id, aws_subnet.private_2.id]
 
   mixed_instances_policy {
@@ -159,11 +161,22 @@ resource "aws_autoscaling_group" "workers" {
         version            = "$Latest"
       }
 
-      override { instance_type = "r5.2xlarge" }
-      override { instance_type = "r5d.2xlarge" }
-      override { instance_type = "r5a.2xlarge" }
-      override { instance_type = "r4.2xlarge" }
-      override { instance_type = "m5.2xlarge" }
+      # --- RANK 1: THE VALUE KINGS (32-core / 128GB) ---
+      # Most efficient Price-per-vCPU
+      override { instance_type = "m7a.8xlarge" }  # 4th Gen AMD (Genoa)
+      override { instance_type = "m6a.8xlarge" }  # 3rd Gen AMD (Milan)
+      override { instance_type = "m5a.8xlarge" }  # Legacy AMD (Deepest Inventory)
+
+      # --- RANK 2: THE FALLBACKS (16-core / 128GB) ---
+      # Higher hourly cost per vCPU, but very stable spot availability
+      override { instance_type = "r7a.4xlarge" }  
+      override { instance_type = "r6a.4xlarge" }
+      override { instance_type = "r5a.4xlarge" }
+
+      # --- RANK 3: THE "D" TYPES (Mixed 16/32-core + Local SSD) ---
+      # Often ignored by others, meaning lower spot prices
+      override { instance_type = "m6ad.8xlarge" } # 32-core + NVMe
+      override { instance_type = "r6id.4xlarge" } # 16-core + NVMe
     }
 
     instances_distribution {

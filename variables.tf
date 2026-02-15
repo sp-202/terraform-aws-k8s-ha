@@ -52,8 +52,57 @@ variable "worker_instance_type" {
   default     = "r5.2xlarge" # 8 vCPU, 64 GiB RAM
 }
 
+# variable "worker_count" {
+#   description = "Number of worker nodes"
+#   type        = number
+#   default     = 3
+# }
+
 variable "worker_count" {
-  description = "Number of worker nodes"
+  description = "Desired number of worker nodes"
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = var.worker_count == 2
+    error_message = "The desired worker_count MUST be exactly 2."
+  }
+}
+
+variable "worker_min" {
+  description = "Strict minimum workers"
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = var.worker_min == 2
+    error_message = "The worker_min MUST be exactly 2."
+  }
+}
+
+variable "worker_max" {
+  description = "Strict maximum workers"
   type        = number
   default     = 3
+
+  validation {
+    condition     = var.worker_max == 3
+    error_message = "The worker_max MUST be exactly 3."
+  }
+}
+
+variable "cloudflare_api_token" {
+  description = "Cloudflare API Token with DNS:Edit permissions"
+  type        = string
+  sensitive   = true
+}
+
+variable "cloudflare_zone_id" {
+  description = "Cloudflare Zone ID for the domain"
+  type        = string
+}
+
+variable "domain_name" {
+  description = "The root domain name (e.g. example.com)"
+  type        = string
 }
