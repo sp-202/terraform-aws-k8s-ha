@@ -32,10 +32,23 @@ chmod +x deploy.sh
 ./deploy.sh
 ```
 
+### 🌐 Custom Domain & DNS Automation
+This setup includes automated DNS management via Cloudflare. It will automatically create A and CNAME records pointing `*.your-domain.com` to your cluster's Master IP.
+
+**Prerequisites:**
+Before running `terraform apply` or `./deploy.sh`, export your Cloudflare credentials:
+
+```bash
+export TF_VAR_cloudflare_api_token="your-token"
+export TF_VAR_cloudflare_zone_id="your-zone-id"
+export TF_VAR_domain_name="your-domain.com"
+```
+
 This script will:
 1. Provision infrastructure with Terraform.
-2. Wait for the Master node to initialize.
-3. Download the `k3s.yaml` kubeconfig to your local directory.
+2. Automate Cloudflare DNS records.
+3. Wait for the Master node to initialize.
+4. Download the `k3s.yaml` kubeconfig to your local directory.
 
 ### Accessing the Cluster
 Once deployed, set your kubeconfig:
