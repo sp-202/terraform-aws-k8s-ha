@@ -72,7 +72,7 @@ rm cilium-linux-${CLI_ARCH}.tar.gz{,.sha256sum}
 cilium install \
   --version 1.16.1 \
   --set ipam.operator.clusterPoolIPv4PodCIDRList="$POD_CIDR" \
-  --set ipv4NativeRoutingCIDR="10.0.0.0/8" \
+  --set ipv4NativeRoutingCIDR="192.168.0.0/16" \
   --set routingMode=native \
   --set autoDirectNodeRoutes=true \
   --set hubble.relay.enabled=true \

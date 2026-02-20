@@ -13,25 +13,25 @@ variable "aws_profile" {
 variable "vpc_cidr" {
   description = "CIDR block for the VPC"
   type        = string
-  default     = "10.0.0.0/16"
+  default     = "192.168.0.0/16"
 }
 
 variable "public_subnet_cidr" {
   description = "CIDR block for the public subnet"
   type        = string
-  default     = "10.0.1.0/24"
+  default     = "192.168.1.0/24"
 }
 
 variable "private_subnet_cidr" {
   description = "CIDR block for the private subnet"
   type        = string
-  default     = "10.0.2.0/24"
+  default     = "192.168.2.0/24"
 }
 
 variable "private_subnet_cidr_2" {
   description = "CIDR block for the second private subnet"
   type        = string
-  default     = "10.0.3.0/24"
+  default     = "192.168.3.0/24"
 }
 
 variable "ssh_public_key_path" {
@@ -43,13 +43,13 @@ variable "ssh_public_key_path" {
 variable "master_instance_type" {
   description = "Instance type for the K3s master node"
   type        = string
-  default     = "c5.2xlarge" # 8 vCPU, 16 GiB RAM
+  default     = "c7g.2xlarge" # 8 vCPU, 16 GiB RAM
 }
 
 variable "worker_instance_type" {
   description = "Instance type for the K3s worker nodes"
   type        = string
-  default     = "r5.2xlarge" # 8 vCPU, 64 GiB RAM
+  default     = "i4g.8xlarge" # 32 vCPU, 256 GiB RAM, 7.5TB NVMe
 }
 
 # variable "worker_count" {
@@ -61,33 +61,33 @@ variable "worker_instance_type" {
 variable "worker_count" {
   description = "Desired number of worker nodes"
   type        = number
-  default     = 2
+  default     = 3
 
   validation {
-    condition     = var.worker_count == 2
-    error_message = "The desired worker_count MUST be exactly 2."
+    condition     = var.worker_count == 3
+    error_message = "The desired worker_count MUST be exactly 3."
   }
 }
 
 variable "worker_min" {
   description = "Strict minimum workers"
   type        = number
-  default     = 2
+  default     = 3
 
   validation {
-    condition     = var.worker_min == 2
-    error_message = "The worker_min MUST be exactly 2."
+    condition     = var.worker_min == 3
+    error_message = "The worker_min MUST be exactly 3."
   }
 }
 
 variable "worker_max" {
   description = "Strict maximum workers"
   type        = number
-  default     = 3
+  default     = 4
 
   validation {
-    condition     = var.worker_max == 3
-    error_message = "The worker_max MUST be exactly 3."
+    condition     = var.worker_max == 4
+    error_message = "The worker_max MUST be exactly 4."
   }
 }
 
