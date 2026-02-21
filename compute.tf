@@ -1,5 +1,5 @@
-resource "aws_key_pair" "k3s_key" {
-  key_name   = "k3s-access-key"
+resource "aws_key_pair" "k8s_key" {
+  key_name   = "k8s-access-key"
   public_key = file(var.ssh_public_key_path)
 }
 
@@ -19,11 +19,12 @@ locals {
   kubeadm_token = "${random_string.kubeadm_token_1.result}.${random_string.kubeadm_token_2.result}"
 }
 
+# k8s master node
 resource "aws_instance" "master" {
   ami           = data.aws_ami.ubuntu.id
   instance_type = var.master_instance_type
   subnet_id     = aws_subnet.public.id
-  key_name      = aws_key_pair.k3s_key.key_name
+  key_name      = aws_key_pair.k8s_key.key_name
 
   vpc_security_group_ids = [aws_security_group.master_sg.id]
   source_dest_check      = false
@@ -71,16 +72,17 @@ resource "aws_instance" "master" {
               EOF
 
   tags = {
-    Name = "k3s-master"
+    Name = "k8s-master"
     Role = "master"
   }
 }
 
+
 resource "aws_launch_template" "worker" {
-  name_prefix   = "k3s-worker-lt-"
+  name_prefix   = "k8s-worker-lt-"
   image_id      = data.aws_ami.ubuntu.id
   instance_type = var.worker_instance_type
-  key_name      = aws_key_pair.k3s_key.key_name
+  key_name      = aws_key_pair.k8s_key.key_name
 
   # Worker 80GB EBS Root Volume
   block_device_mappings {
@@ -92,10 +94,13 @@ resource "aws_launch_template" "worker" {
     }
   }
 
+  iam_instance_profile {
+    name = aws_iam_instance_profile.node_profile.name
+  }
+
   network_interfaces {
     associate_public_ip_address = false
     security_groups             = [aws_security_group.worker_sg.id]
-    source_dest_check           = false
   }
 
   user_data = base64encode(<<-EOF
@@ -117,8 +122,21 @@ resource "aws_launch_template" "worker" {
               # Wait for master to be ready
               sleep 60
               
+              echo "Installing AWS CLI v2 for modifying instance attributes..."
+              if [ "$(uname -m)" = "aarch64" ]; then
+                  curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o "awscliv2.zip"
+              else
+                  curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+              fi
+              unzip -q awscliv2.zip
+              sudo ./aws/install
+              rm -rf awscliv2.zip aws/
+
+              echo "Disabling Source/Dest Check for Cilium..."
+              aws ec2 modify-instance-attribute --instance-id $INSTANCE_ID --no-source-dest-check --region ${var.aws_region}
+              
               echo "Joining Cluster..."
-              sudo kubeadm join ${aws_instance.master.public_ip}:6443 --token ${local.kubeadm_token} --discovery-token-unsafe-skip-ca-verification --node-name k3s-worker-$INSTANCE_ID
+              sudo kubeadm join ${aws_instance.master.public_ip}:6443 --token ${local.kubeadm_token} --discovery-token-unsafe-skip-ca-verification --node-name k8s-worker-spark-$INSTANCE_ID
               
               echo "Worker User Data Complete."
               EOF
@@ -127,9 +145,9 @@ resource "aws_launch_template" "worker" {
   tag_specifications {
     resource_type = "instance"
     tags = {
-      Project = "k3s-cluster"
-      Name    = "k3s-worker-asg"
-      Role    = "worker"
+      Project = "k8s-cluster"
+      Name    = "k8s-worker-asg"
+      Role    = "worker-spark"
     }
   }
 
@@ -138,12 +156,13 @@ resource "aws_launch_template" "worker" {
   }
 }
 
+# k8s spark worker nodes
 resource "aws_autoscaling_group" "workers" {
-  name                = "k3s-workers-asg"
+  name                = "k8s-workers-asg"
   desired_capacity    = var.worker_count
   min_size            = var.worker_min
   max_size            = var.worker_max
-  vpc_zone_identifier = [aws_subnet.private.id, aws_subnet.private_2.id]
+  vpc_zone_identifier = [aws_subnet.private.id]
 
   mixed_instances_policy {
     launch_template {
@@ -167,23 +186,23 @@ resource "aws_autoscaling_group" "workers" {
 
   tag {
     key                 = "Name"
-    value               = "k3s-worker-asg"
+    value               = "k8s-worker-asg"
     propagate_at_launch = true
   }
 
   depends_on = [aws_instance.master]
 }
 
-# --- Dedicated Storage Workers ---
-
+# --- Dedicated k8s Storage Workers ---
 resource "aws_instance" "minio_worker" {
   ami           = data.aws_ami.ubuntu.id
-  instance_type = "i4g.16xlarge"
+  instance_type = "im4gn.8xlarge"
   subnet_id     = aws_subnet.private.id
-  key_name      = aws_key_pair.k3s_key.key_name
+  key_name      = aws_key_pair.k8s_key.key_name
 
   vpc_security_group_ids = [aws_security_group.worker_sg.id]
   source_dest_check      = false
+  iam_instance_profile   = aws_iam_instance_profile.node_profile.name
 
   root_block_device {
     volume_size           = 80
@@ -206,24 +225,39 @@ resource "aws_instance" "minio_worker" {
               /root/common.sh
 
               sleep 60
-              sudo kubeadm join ${aws_instance.master.public_ip}:6443 --token ${local.kubeadm_token} --discovery-token-unsafe-skip-ca-verification --node-name k3s-worker-minio-$INSTANCE_ID
+
+              echo "Installing AWS CLI v2 for modifying instance attributes..."
+              if [ "$(uname -m)" = "aarch64" ]; then
+                  curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o "awscliv2.zip"
+              else
+                  curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+              fi
+              unzip -q awscliv2.zip
+              sudo ./aws/install
+              rm -rf awscliv2.zip aws/
+
+              echo "Disabling Source/Dest Check for Cilium..."
+              aws ec2 modify-instance-attribute --instance-id $INSTANCE_ID --no-source-dest-check --region ${var.aws_region}
+              sudo kubeadm join ${aws_instance.master.public_ip}:6443 --token ${local.kubeadm_token} --discovery-token-unsafe-skip-ca-verification --node-name k8s-worker-minio-$INSTANCE_ID
               EOF
   )
 
   tags = {
-    Name = "k3s-worker-minio-dedicated"
+    Name = "k8s-worker-minio-dedicated"
     Role = "worker-storage"
   }
 }
 
-resource "aws_instance" "dedicated_i4g_worker" {
+# Dedicated spark critical driver/worker nodes
+resource "aws_instance" "worker-spark-critical" {
   ami           = data.aws_ami.ubuntu.id
   instance_type = "i4g.8xlarge"
-  subnet_id     = aws_subnet.private_2.id
-  key_name      = aws_key_pair.k3s_key.key_name
+  subnet_id     = aws_subnet.private.id
+  key_name      = aws_key_pair.k8s_key.key_name
 
   vpc_security_group_ids = [aws_security_group.worker_sg.id]
   source_dest_check      = false
+  iam_instance_profile   = aws_iam_instance_profile.node_profile.name
 
   root_block_device {
     volume_size           = 80
@@ -246,24 +280,39 @@ resource "aws_instance" "dedicated_i4g_worker" {
               /root/common.sh
 
               sleep 60
-              sudo kubeadm join ${aws_instance.master.public_ip}:6443 --token ${local.kubeadm_token} --discovery-token-unsafe-skip-ca-verification --node-name k3s-worker-i4g-$INSTANCE_ID
+
+              echo "Installing AWS CLI v2 for modifying instance attributes..."
+              if [ "$(uname -m)" = "aarch64" ]; then
+                  curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o "awscliv2.zip"
+              else
+                  curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+              fi
+              unzip -q awscliv2.zip
+              sudo ./aws/install
+              rm -rf awscliv2.zip aws/
+
+              echo "Disabling Source/Dest Check for Cilium..."
+              aws ec2 modify-instance-attribute --instance-id $INSTANCE_ID --no-source-dest-check --region ${var.aws_region}
+              sudo kubeadm join ${aws_instance.master.public_ip}:6443 --token ${local.kubeadm_token} --discovery-token-unsafe-skip-ca-verification --node-name k8s-worker-spark-critical-$INSTANCE_ID
               EOF
   )
 
   tags = {
-    Name = "k3s-worker-i4g-dedicated"
-    Role = "worker-storage"
+    Name = "k8s-worker-spark-critical"
+    Role = "worker-spark-critical"
   }
 }
 
-resource "aws_instance" "dedicated_im4gn_worker" {
+# General purpose k8s worker nodes
+resource "aws_instance" "k8s_worker_node" {
   ami           = data.aws_ami.ubuntu.id
   instance_type = "im4gn.4xlarge"
   subnet_id     = aws_subnet.private.id
-  key_name      = aws_key_pair.k3s_key.key_name
+  key_name      = aws_key_pair.k8s_key.key_name
 
   vpc_security_group_ids = [aws_security_group.worker_sg.id]
   source_dest_check      = false
+  iam_instance_profile   = aws_iam_instance_profile.node_profile.name
 
   root_block_device {
     volume_size           = 80
@@ -286,12 +335,25 @@ resource "aws_instance" "dedicated_im4gn_worker" {
               /root/common.sh
 
               sleep 60
-              sudo kubeadm join ${aws_instance.master.public_ip}:6443 --token ${local.kubeadm_token} --discovery-token-unsafe-skip-ca-verification --node-name k3s-worker-im4gn-$INSTANCE_ID
+
+              echo "Installing AWS CLI v2 for modifying instance attributes..."
+              if [ "$(uname -m)" = "aarch64" ]; then
+                  curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o "awscliv2.zip"
+              else
+                  curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+              fi
+              unzip -q awscliv2.zip
+              sudo ./aws/install
+              rm -rf awscliv2.zip aws/
+
+              echo "Disabling Source/Dest Check for Cilium..."
+              aws ec2 modify-instance-attribute --instance-id $INSTANCE_ID --no-source-dest-check --region ${var.aws_region}
+              sudo kubeadm join ${aws_instance.master.public_ip}:6443 --token ${local.kubeadm_token} --discovery-token-unsafe-skip-ca-verification --node-name k8s-worker-node-$INSTANCE_ID
               EOF
   )
 
   tags = {
-    Name = "k3s-worker-im4gn-dedicated"
-    Role = "worker-storage"
+    Name = "k8s-worker-node"
+    Role = "k8s-worker-node"
   }
 }

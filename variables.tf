@@ -28,26 +28,21 @@ variable "private_subnet_cidr" {
   default     = "192.168.2.0/24"
 }
 
-variable "private_subnet_cidr_2" {
-  description = "CIDR block for the second private subnet"
-  type        = string
-  default     = "192.168.3.0/24"
-}
 
 variable "ssh_public_key_path" {
   description = "Path to the SSH public key to be used for instances"
   type        = string
-  default     = "~/.ssh/id_rsa.pub"
+  default     = "~/.ssh/id_ed25519.pub"
 }
 
 variable "master_instance_type" {
-  description = "Instance type for the K3s master node"
+  description = "Instance type for the K8s master node"
   type        = string
   default     = "c7g.2xlarge" # 8 vCPU, 16 GiB RAM
 }
 
 variable "worker_instance_type" {
-  description = "Instance type for the K3s worker nodes"
+  description = "Instance type for the K8s worker nodes"
   type        = string
   default     = "i4g.8xlarge" # 32 vCPU, 256 GiB RAM, 7.5TB NVMe
 }
@@ -91,18 +86,18 @@ variable "worker_max" {
   }
 }
 
-variable "cloudflare_api_token" {
-  description = "Cloudflare API Token with DNS:Edit permissions"
-  type        = string
-  sensitive   = true
-}
-
-variable "cloudflare_zone_id" {
-  description = "Cloudflare Zone ID for the domain"
-  type        = string
-}
-
-variable "domain_name" {
-  description = "The root domain name (e.g. example.com)"
-  type        = string
-}
+# variable "cloudflare_api_token" {
+#   description = "Cloudflare API Token with DNS:Edit permissions"
+#   type        = string
+#   sensitive   = true
+# }
+# 
+# variable "cloudflare_zone_id" {
+#   description = "Cloudflare Zone ID for the domain"
+#   type        = string
+# }
+# 
+# variable "domain_name" {
+#   description = "The root domain name (e.g. example.com)"
+#   type        = string
+# }

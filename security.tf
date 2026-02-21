@@ -1,20 +1,20 @@
 resource "aws_security_group" "master_sg" {
-  name        = "k3s-master-sg"
-  description = "Security group for K3s Master"
+  name        = "k8s-master-sg"
+  description = "Security group for K8s Master"
   vpc_id      = aws_vpc.main.id
 
   tags = {
-    Name = "k3s-master-sg"
+    Name = "k8s-master-sg"
   }
 }
 
 resource "aws_security_group" "worker_sg" {
-  name        = "k3s-worker-sg"
-  description = "Security group for K3s Workers"
+  name        = "k8s-worker-sg"
+  description = "Security group for K8s Workers"
   vpc_id      = aws_vpc.main.id
 
   tags = {
-    Name = "k3s-worker-sg"
+    Name = "k8s-worker-sg"
   }
 }
 
@@ -37,7 +37,7 @@ resource "aws_security_group_rule" "master_api_ingress" {
   protocol          = "tcp"
   cidr_blocks       = ["0.0.0.0/0"]
   security_group_id = aws_security_group.master_sg.id
-  description       = "K3s API Server"
+  description       = "K8s API Server"
 }
 
 resource "aws_security_group_rule" "master_internal_ingress_self" {
@@ -163,4 +163,48 @@ resource "aws_security_group_rule" "worker_https_ingress" {
   cidr_blocks       = ["0.0.0.0/0"]
   security_group_id = aws_security_group.worker_sg.id
   description       = "HTTPS from anywhere"
+}
+
+# --- Explicit Kubeadm & Cilium Required Ports ---
+# Kubelet API
+resource "aws_security_group_rule" "worker_kubelet_ingress" {
+  type                     = "ingress"
+  from_port                = 10250
+  to_port                  = 10250
+  protocol                 = "tcp"
+  source_security_group_id = aws_security_group.master_sg.id
+  security_group_id        = aws_security_group.worker_sg.id
+  description              = "Kubelet API from Master"
+}
+
+# Cilium BGP (Native Routing)
+resource "aws_security_group_rule" "worker_bgp_ingress" {
+  type              = "ingress"
+  from_port         = 179
+  to_port           = 179
+  protocol          = "tcp"
+  self              = true
+  security_group_id = aws_security_group.worker_sg.id
+  description       = "Cilium BGP from other workers"
+}
+
+resource "aws_security_group_rule" "master_bgp_ingress" {
+  type                     = "ingress"
+  from_port                = 179
+  to_port                  = 179
+  protocol                 = "tcp"
+  source_security_group_id = aws_security_group.worker_sg.id
+  security_group_id        = aws_security_group.master_sg.id
+  description              = "Cilium BGP from workers"
+}
+
+# Cilium Health
+resource "aws_security_group_rule" "worker_cilium_health" {
+  type              = "ingress"
+  from_port         = 4240
+  to_port           = 4240
+  protocol          = "tcp"
+  self              = true
+  security_group_id = aws_security_group.worker_sg.id
+  description       = "Cilium Health Checks"
 }

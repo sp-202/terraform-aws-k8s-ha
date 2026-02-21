@@ -38,17 +38,10 @@ fi
 
 # Configure kubeconfig
 
-# Configure kubeconfig
-
-if [ -n "$SUDO_USER" ]; then
-    USER_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
-    USER_ID=$(id -u "$SUDO_USER")
-    GROUP_ID=$(id -g "$SUDO_USER")
-else
-    USER_HOME=$HOME
-    USER_ID=$(id -u)
-    GROUP_ID=$(id -g)
-fi
+# Configure kubeconfig for the default 'ubuntu' user
+USER_HOME="/home/ubuntu"
+USER_ID=$(id -u ubuntu)
+GROUP_ID=$(id -g ubuntu)
 
 mkdir -p "$USER_HOME"/.kube
 sudo cp /etc/kubernetes/admin.conf "$USER_HOME"/.kube/config

@@ -4,10 +4,10 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
-    cloudflare = {
-      source  = "cloudflare/cloudflare"
-      version = "~> 4.0"
-    }
+    #    cloudflare = {
+    #      source  = "cloudflare/cloudflare"
+    #      version = "~> 4.0"
+    #    }
   }
 }
 
@@ -17,12 +17,12 @@ provider "aws" {
 
   default_tags {
     tags = {
-      Project = "k3s-cluster"
+      Project = "k8s-cluster"
       Owner   = "terraform"
     }
   }
 }
 
-provider "cloudflare" {
-  api_token = var.cloudflare_api_token
-}
+# provider "cloudflare" {
+#   api_token = var.cloudflare_api_token
+# }

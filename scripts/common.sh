@@ -6,8 +6,8 @@ set -euxo pipefail
 
 # Kubernetes Variable Declaration
 KUBERNETES_VERSION="v1.34"
-CRICTL_VERSION="v1.34.0"
-KUBERNETES_INSTALL_VERSION="1.34.0-1.1"
+CRICTL_VERSION="v1.35.0"
+KUBERNETES_INSTALL_VERSION="1.34.4-1.1"
 
 # Disable swap
 sudo swapoff -a
@@ -131,8 +131,8 @@ sudo apt-mark hold kubelet kubeadm kubectl
 
 sudo apt-get update -y
 
-# Install jq, a command-line JSON processor
-sudo apt-get install -y jq
+# Install jq, a command-line JSON processor, and unzip
+sudo apt-get install -y jq unzip
 
 # Retrieve the default interface IP address and set it for kubelet
 local_ip="$(ip -j route get 8.8.8.8 | jq -r '.[0].prefsrc')"
@@ -143,15 +143,45 @@ KUBELET_EXTRA_ARGS=--node-ip=$local_ip
 EOF
 
 # 2. NVMe Mount Optimization (The "IOPS" Boost)
-# Identify your 7.5TB NVMe (usually /dev/nvme0n1)
-DISK_DEV="/dev/nvme0n1"
+echo "Looking for available local NVMe instance store disks..."
 
-if [ -b "$DISK_DEV" ]; then
-    echo "Configuring 7.5TB NVMe for Spark Shuffle..."
-    # Format with XFS (optimized for high-concurrency small file writes)
-    sudo mkfs.xfs -f -K "$DISK_DEV"
+if ! command -v nvme &> /dev/null; then
+    sudo apt-get install -y nvme-cli
+fi
+
+DISK_DEV=""
+for dev in $(ls /dev/nvme*n1 2>/dev/null); do
+    # Verify this is actually an Ephemeral Instance Store drive, not EBS
+    MODEL=$(sudo nvme id-ctrl "$dev" | grep -i mn | awk -F':' '{print $2}' | xargs || true)
+    
+    if [[ "$MODEL" == *"Instance Storage"* ]]; then
+        # Skip if the device is already mounted anywhere just to be safe
+        mount_count=$(mount | grep -c "$dev" || true)
+        if [ "$mount_count" -eq 0 ]; then
+             DISK_DEV="$dev"
+             break
+        fi
+    fi
+done
+
+if [ -n "$DISK_DEV" ]; then
+    echo "Configuring NVMe $DISK_DEV for Spark Shuffle..."
+    # Check if it already has an XFS filesystem
+    FSTYPE=$(lsblk -no FSTYPE "$DISK_DEV" 2>/dev/null || true)
+    if [ "$FSTYPE" != "xfs" ]; then
+        sudo mkfs.xfs -f -K "$DISK_DEV"
+    fi
     sudo mkdir -p /mnt/spark-nvme
-    # Mount with 'noatime' to skip unnecessary metadata updates
-    sudo mount -o noatime,nodiratime,logbsize=256k "$DISK_DEV" /mnt/spark-nvme
-    echo "$DISK_DEV /mnt/spark-nvme xfs defaults,noatime,nodiratime 0 0" >> /etc/fstab
+    
+    mount_check=$(grep -c "/mnt/spark-nvme" /proc/mounts || true)
+    if [ "$mount_check" -eq 0 ]; then
+        sudo mount -o noatime,nodiratime,logbsize=256k "$DISK_DEV" /mnt/spark-nvme
+    fi
+    
+    fstab_check=$(grep -c "$DISK_DEV /mnt/spark-nvme" /etc/fstab || true)
+    if [ "$fstab_check" -eq 0 ]; then
+        echo "$DISK_DEV /mnt/spark-nvme xfs defaults,noatime,nodiratime 0 0" >> /etc/fstab
+    fi
+else
+    echo "No unmounted instances store NVMe drives found. Skipping NVMe setup."
 fi

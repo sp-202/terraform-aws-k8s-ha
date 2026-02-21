@@ -8,9 +8,9 @@ output "master_private_ip" {
   value       = aws_instance.master.private_ip
 }
 
-output "k3s_token" {
-  description = "K3s Cluster Token"
-  value       = random_password.k3s_token.result
+output "k8s_token" {
+  description = "Kubeadm Cluster Token"
+  value       = local.kubeadm_token
   sensitive   = true
 }
 

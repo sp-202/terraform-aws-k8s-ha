@@ -5,7 +5,7 @@ resource "aws_vpc" "main" {
   enable_dns_support   = true
 
   tags = {
-    Name = "k3s-vpc"
+    Name = "k8s-vpc"
   }
 }
 
@@ -14,7 +14,7 @@ resource "aws_internet_gateway" "main" {
   vpc_id = aws_vpc.main.id
 
   tags = {
-    Name = "k3s-igw"
+    Name = "k8s-igw"
   }
 }
 
@@ -26,7 +26,7 @@ resource "aws_subnet" "public" {
   map_public_ip_on_launch = true
 
   tags = {
-    Name = "k3s-public-subnet"
+    Name = "k8s-public-subnet"
   }
 }
 
@@ -37,27 +37,17 @@ resource "aws_subnet" "private" {
   availability_zone = "${var.aws_region}a"
 
   tags = {
-    Name = "k3s-private-subnet-1"
+    Name = "k8s-private-subnet-1"
   }
 }
 
-# Private Subnet 2
-resource "aws_subnet" "private_2" {
-  vpc_id            = aws_vpc.main.id
-  cidr_block        = var.private_subnet_cidr_2
-  availability_zone = "${var.aws_region}a"
-
-  tags = {
-    Name = "k3s-private-subnet-2"
-  }
-}
 
 # NAT Gateway (for Private Subnet internet access)
 resource "aws_eip" "nat" {
   domain = "vpc"
 
   tags = {
-    Name = "k3s-nat-eip"
+    Name = "k8s-nat-eip"
   }
 }
 
@@ -66,7 +56,7 @@ resource "aws_nat_gateway" "main" {
   subnet_id     = aws_subnet.public.id
 
   tags = {
-    Name = "k3s-nat-gw"
+    Name = "k8s-nat-gw"
   }
 
   depends_on = [aws_internet_gateway.main]
@@ -82,7 +72,7 @@ resource "aws_route_table" "public" {
   }
 
   tags = {
-    Name = "k3s-public-rt"
+    Name = "k8s-public-rt"
   }
 }
 
@@ -101,7 +91,7 @@ resource "aws_route_table" "private" {
   }
 
   tags = {
-    Name = "k3s-private-rt"
+    Name = "k8s-private-rt"
   }
 }
 
@@ -110,7 +100,3 @@ resource "aws_route_table_association" "private" {
   route_table_id = aws_route_table.private.id
 }
 
-resource "aws_route_table_association" "private_2" {
-  subnet_id      = aws_subnet.private_2.id
-  route_table_id = aws_route_table.private.id
-}
