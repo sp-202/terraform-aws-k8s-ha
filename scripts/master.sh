@@ -67,8 +67,59 @@ cilium install \
   --set ipam.operator.clusterPoolIPv4PodCIDRList="$POD_CIDR" \
   --set ipv4NativeRoutingCIDR="192.168.0.0/16" \
   --set routingMode=native \
-  --set autoDirectNodeRoutes=true \
+  --set autoDirectNodeRoutes=false \
   --set hubble.relay.enabled=true \
   --set hubble.ui.enabled=true
 sleep 60
-cilium status --wait
+cilium status --wait || true
+
+# Install Helm
+echo "Installing Helm 3..."
+curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+chmod 700 get_helm.sh
+./get_helm.sh
+rm get_helm.sh
+
+# Install AWS Node Termination Handler
+echo "Installing AWS Node Termination Handler..."
+helm repo add eks https://aws.github.io/eks-charts
+helm repo update
+helm upgrade --install aws-node-termination-handler \
+  --namespace kube-system \
+  --set enableSpotInterruptionDraining=true \
+  --set enableRebalanceMonitoring=true \
+  eks/aws-node-termination-handler
+
+# Start Node Auto-Labeling Daemon for ROLES
+cat << 'EOD' > /usr/local/bin/auto-label-nodes.sh
+#!/bin/bash
+export KUBECONFIG=/etc/kubernetes/admin.conf
+while true; do
+  for node in $(kubectl get nodes --no-headers | awk '{print $1}'); do
+    if [[ $node == spark-worker-* ]]; then kubectl label node $node node-role.kubernetes.io/spark-worker='' --overwrite; fi
+    if [[ $node == minio-worker-* ]]; then kubectl label node $node node-role.kubernetes.io/minio-worker='' --overwrite; fi
+    if [[ $node == spark-node-* ]]; then kubectl label node $node node-role.kubernetes.io/spark-node='' --overwrite; fi
+    if [[ $node == k8s-gp-node-* ]]; then kubectl label node $node node-role.kubernetes.io/k8s-gp-node='' --overwrite; fi
+  done
+  sleep 10
+done
+EOD
+
+chmod +x /usr/local/bin/auto-label-nodes.sh
+
+cat << 'EOD' > /etc/systemd/system/k8s-auto-label.service
+[Unit]
+Description=Kubernetes Auto Node Labeler
+After=kubelet.service
+
+[Service]
+ExecStart=/usr/local/bin/auto-label-nodes.sh
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOD
+
+systemctl daemon-reload
+systemctl enable --now k8s-auto-label.service

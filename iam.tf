@@ -26,7 +26,8 @@ resource "aws_iam_policy" "node_policy" {
       {
         Action = [
           "ec2:ModifyInstanceAttribute",
-          "ec2:DescribeInstances"
+          "ec2:DescribeInstances",
+          "ec2:TerminateInstances"
         ]
         Effect   = "Allow"
         Resource = "*"

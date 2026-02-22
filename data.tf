@@ -17,3 +17,18 @@ data "aws_ami" "ubuntu" {
     values = ["arm64"]
   }
 }
+
+data "aws_ami" "golden" {
+  most_recent = true
+  owners      = ["self"]
+
+  filter {
+    name   = "name"
+    values = ["k8s-ubuntu-2404-arm64-golden-v1-*"]
+  }
+
+  filter {
+    name   = "state"
+    values = ["available"]
+  }
+}
