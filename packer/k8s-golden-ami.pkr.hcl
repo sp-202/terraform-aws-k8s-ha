@@ -59,7 +59,7 @@ build {
   }
 
   provisioner "file" {
-    source      = "../scripts/common-ami.sh"
+    source      = "common-ami.sh"
     destination = "/tmp/common-ami.sh"
   }
 

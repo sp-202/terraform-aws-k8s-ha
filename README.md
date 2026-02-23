@@ -1,106 +1,65 @@
-# AWS K3s Cluster with Terraform
+# High-Performance Kubernetes 1.34 Cluster on AWS (ARM64)
 
-A professional-grade Terraform setup to deploy a highly available **K3s Kubernetes Cluster** on AWS.
+This repository provides a production-ready, automated setup for a **Kubernetes 1.34 HA Cluster** on AWS, optimized for data-intensive workloads like Spark and MinIO. It leverages **Infrastructure as Code (Terraform)**, **Golden AMIs (Packer)**, and **NVMe RAID 0** storage for maximum performance.
 
-## 🏗 Architecture
-- **VPC & Networking**: Custom VPC with Public and Private subnets across multiple Availability Zones (`us-east-1a`, `us-east-1b`, `us-east-1c`).
-- **Master Node**: 
-  - On-Demand Instance (`c5.2xlarge`) in Public Subnet.
-  - Acts as Control Plane and SSH Bastion.
-  - Self-healing: Recreates automatically if startup configuration changes.
-- **Worker Nodes**: 
-  - **Auto Scaling Group (ASG)** spanning multiple AZs.
-  - **Spot Instances** (`r5.2xlarge`, `r5d.2xlarge`, `m5.2xlarge`, etc.) for cost optimization.
-  - Private networking with NAT Gateway for secure internet access.
-- **Security**: 
-  - Least-privilege Security Groups.
-  - SSH access restricted to Key Pair.
+## 🏗 Key Features & Architecture
 
-## 🚀 Quick Start
+### 1. Advanced Networking & Load Balancing
+- **Cilium CNI**: High-performance networking with eBPF and Hubble observability.
+- **MetalLB**: Layer 2 load balancing for on-premise style external IP management.
+- **AWS Node Termination Handler**: Gracefully handles Spot Instance interruptions.
+
+### 2. High-Performance Storage
+- **Automatic NVMe Discovery**: Dynamically identifies local instance store disks.
+- **RAID 0 Optimization**: Automatically strips multiple NVMe drives into a RAID 0 array for massive IOPS/throughput.
+- **OpenEBS**: Local provisioner for dynamic `StorageClass` management using local high-speed disks.
+
+### 3. Golden AMI Optimization
+- Uses **Packer** to pre-bake all heavy dependencies (`containerd 2.0`, `kubeadm`, `cilium`, `helm`) into the AMI.
+- Drastically reduces instance boot time (User Data only handles runtime configuration, no package installs).
+
+### 4. Specialized Node Roles (Auto-Labeled)
+The cluster automatically labels nodes based on their purpose:
+- **GP Nodes**: General purpose worker nodes.
+- **Spark Nodes**: Dedicated nodes for Spark critical/spot workloads.
+- **MinIO Nodes**: Optimized for S3-compatible object storage.
+
+## 🚀 Deployment
 
 ### Prerequisites
-- [AWS CLI](https://aws.amazon.com/cli/) configured with `us-east-1` region.
-- [Terraform](https://www.terraform.io/) installed (v1.0+).
-- `kubectl` installed locally.
-- SSH Public Key at `~/.ssh/id_rsa.pub` (or update `variables.tf`).
+- [AWS CLI](https://aws.amazon.com/cli/) configured.
+- [Packer](https://www.packer.io/) installed.
+- [Terraform](https://www.terraform.io/) installed.
 
-### Deployment
-Run the automated deployment script:
-
+### 1. Build the Golden AMI
 ```bash
+cd packer
+packer init .
+packer build k8s-golden-ami.pkr.hcl
+```
+
+### 2. Provision the Cluster
+```bash
+# Return to root directory
 chmod +x deploy.sh
 ./deploy.sh
 ```
 
-### 🌐 Custom Domain & DNS Automation
-This setup includes automated DNS management via Cloudflare. It will automatically create A and CNAME records pointing `*.your-domain.com` to your cluster's Master IP.
+The script will automatically provision the VPC, Master Node, and multiple Auto Scaling Groups, then fetch the `kubeconfig` to your local machine.
 
-**Prerequisites:**
-Before running `terraform apply` or `./deploy.sh`, export your Cloudflare credentials:
-
-```bash
-export TF_VAR_cloudflare_api_token="your-token"
-export TF_VAR_cloudflare_zone_id="your-zone-id"
-export TF_VAR_domain_name="your-domain.com"
-```
-
-This script will:
-1. Provision infrastructure with Terraform.
-2. Automate Cloudflare DNS records.
-3. Wait for the Master node to initialize.
-4. Download the `k3s.yaml` kubeconfig to your local directory.
-
-### Accessing the Cluster
-Once deployed, set your kubeconfig:
-
+## 🔧 Post-Deployment
+Access the cluster:
 ```bash
 export KUBECONFIG=$(pwd)/k3s.yaml
 kubectl get nodes
 ```
 
-## 🔧 Management
+## 📂 Repository Structure
+- `packer/`: Golden AMI configuration and initialization scripts.
+- `scripts/`: specialized runtime scripts (`common-runtime.sh`, `master-runtime.sh`).
+- `compute-*.tf`: Specialized compute modules for different node roles.
+- `issues.md`: Detailed history of technical troubleshooting and resolutions.
 
-### SSH Access
-**To Master:**
-```bash
-# Get Master IP
-terraform output master_public_ip
-
-# SSH
-ssh -i ~/.ssh/id_rsa ubuntu@<MASTER_IP>
-```
-
-**To Workers (via Jump Host):**
-Get the dynamic worker IPs:
-```bash
-terraform output worker_ips_command | bash
-```
-Then proxy-jump:
-```bash
-ssh -J ubuntu@<MASTER_IP> ubuntu@<WORKER_PRIVATE_IP>
-```
-
-### Destruction
-To tear down the cluster and stop billing:
-
-```bash
-terraform destroy -auto-approve
-```
-
-## 📂 File Structure
-- `compute.tf`: EC2 instances, ASG, Launch Templates.
-- `network.tf`: VPC, Subnets, NAT Gateway, Route Tables.
-- `security.tf`: Security Groups.
-- `variables.tf`: Configuration variables.
-- `outputs.tf`: Terraform outputs.
-- `deploy.sh`: Orchestration script.
-
-## 🛠 Optional Components
-
-### Code Server (VS Code in Browser)
-The `main-code-server.tf` file provisions a standalone VS Code server instance. By default, this file is disabled to prevent accidental deployment.
-
-- **To Enable**: Rename `main-code-server.tf.disabled` to `main-code-server.tf`.
-- **To Disable**: Rename `main-code-server.tf` to `main-code-server.tf.disabled`.
-
-Terraform automatically ignores files that do not end with `.tf`.
+## 🛠 Management & Scale
+- **Scaling**: Simply update the `min_size`/`max_size` in the respective `compute-*.tf` files.
+- **Security Check**: Master nodes are accessible via Public IP (SSH), while Workers are in Private subnets (access via Jump Host).

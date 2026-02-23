@@ -41,10 +41,11 @@ cilium install \
   --set ipv4NativeRoutingCIDR="192.168.0.0/16" \
   --set routingMode=native \
   --set autoDirectNodeRoutes=false \
+  --set kubeProxyReplacement=true \
+  --set l2announcements.enabled=true \
   --set hubble.relay.enabled=true \
   --set hubble.ui.enabled=true
-sleep 60
-cilium status --wait || true
+sleep 30
 
 # Install AWS Node Termination Handler
 echo "Installing AWS Node Termination Handler..."
@@ -62,7 +63,10 @@ helm repo add metallb https://metallb.github.io/metallb
 helm repo update
 helm upgrade --install metallb metallb/metallb \
   --namespace metallb-system --create-namespace \
-  --wait
+  --set speaker.tolerateMaster=true \
+  --set speaker.frr.enabled=false \
+  --set controller.nodeSelector."node-role\.kubernetes\.io/control-plane"="" \
+  --set speaker.nodeSelector."kubernetes\.io/os"=linux
 
 # ------ NEW: OpenEBS Install ------
 echo "Installing OpenEBS..."
@@ -70,8 +74,7 @@ helm repo add openebs https://openebs.github.io/charts
 helm repo update
 helm upgrade --install openebs openebs/openebs \
   --namespace openebs --create-namespace \
-  --set localprovisioner.enabled=true \
-  --wait
+  --set localprovisioner.enabled=true
 
 # Start Node Auto-Labeling Daemon for ROLES
 cat << 'EOD' > /usr/local/bin/auto-label-nodes.sh
