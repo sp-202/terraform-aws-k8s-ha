@@ -34,10 +34,10 @@ resource "aws_launch_template" "worker" {
               TOKEN=$(curl -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
               INSTANCE_ID=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" -s http://169.254.169.254/latest/meta-data/instance-id)
 
-              echo "${base64encode(file("${path.module}/scripts/common.sh"))}" | base64 -d > /root/common.sh
-              chmod +x /root/common.sh
+              echo "${base64encode(file("${path.module}/scripts/common-runtime.sh"))}" | base64 -d > /root/common-runtime.sh
+              chmod +x /root/common-runtime.sh
               
-              /root/common.sh
+              /root/common-runtime.sh
 
               # Wait for master to be ready
               sleep 60

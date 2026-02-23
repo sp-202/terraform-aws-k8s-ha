@@ -43,20 +43,20 @@ resource "aws_instance" "master" {
 
               echo "Starting Master User Data..."
 
-              echo "${base64encode(file("${path.module}/scripts/common.sh"))}" | base64 -d > /root/common.sh
-              echo "${base64encode(file("${path.module}/scripts/master.sh"))}" | base64 -d > /root/master.sh
+              echo "${base64encode(file("${path.module}/scripts/common-runtime.sh"))}" | base64 -d > /root/common-runtime.sh
+              echo "${base64encode(file("${path.module}/scripts/master-runtime.sh"))}" | base64 -d > /root/master-runtime.sh
 
-              chmod +x /root/common.sh /root/master.sh
+              chmod +x /root/common-runtime.sh /root/master-runtime.sh
 
-              # Run common.sh
-              /root/common.sh
+              # Run common-runtime.sh
+              /root/common-runtime.sh
 
-              # Modify master.sh
-              sed -i 's/PUBLIC_IP_ACCESS="false"/PUBLIC_IP_ACCESS="true"/' /root/master.sh
-              sed -i 's/sudo kubeadm init /sudo kubeadm init --token "${local.kubeadm_token}" /' /root/master.sh
+              # Modify master-runtime.sh
+              sed -i 's/PUBLIC_IP_ACCESS="false"/PUBLIC_IP_ACCESS="true"/' /root/master-runtime.sh
+              sed -i 's/sudo kubeadm init /sudo kubeadm init --token "${local.kubeadm_token}" /' /root/master-runtime.sh
 
-              # Run master.sh
-              /root/master.sh
+              # Run master-runtime.sh
+              /root/master-runtime.sh
 
               # Untaint master to allow scheduling pods
               export KUBECONFIG=/etc/kubernetes/admin.conf

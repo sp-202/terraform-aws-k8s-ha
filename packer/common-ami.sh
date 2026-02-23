@@ -36,7 +36,13 @@ sudo install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
 echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | sudo tee /etc/apt/sources.list.d/docker.list
 sudo apt-get update
-sudo apt-get install -y containerd.io
+
+CONTAINERD_VERSION=$(apt-cache madison containerd.io | awk '{print $3}' | grep -E '^2\.[0-9]+\.[0-9]+' | head -n1)
+if [ -z "$CONTAINERD_VERSION" ]; then
+    echo "Error: Failed to find Containerd 2.x in apt cache."
+    exit 1
+fi
+sudo apt-get install -y containerd.io="$CONTAINERD_VERSION"
 
 sudo containerd config default | sudo tee /etc/containerd/config.toml
 sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml
@@ -48,3 +54,42 @@ echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.
 sudo apt-get update
 sudo apt-get install -y kubelet="$KUBERNETES_INSTALL_VERSION" kubectl="$KUBERNETES_INSTALL_VERSION" kubeadm="$KUBERNETES_INSTALL_VERSION" nvme-cli mdadm
 sudo apt-mark hold kubelet kubeadm kubectl
+
+# 5. Crictl Runtime CLI
+ARCH="$(dpkg --print-architecture)"
+case "$ARCH" in
+  amd64) CRICTL_ARCH="amd64" ;;
+  arm64) CRICTL_ARCH="arm64" ;;
+  *)
+    echo "Unsupported architecture: $ARCH"
+    exit 1
+    ;;
+esac
+
+CRICTL_VERSION="v1.35.0"
+curl -LO "https://github.com/kubernetes-sigs/cri-tools/releases/download/${CRICTL_VERSION}/crictl-${CRICTL_VERSION}-linux-${CRICTL_ARCH}.tar.gz"
+sudo tar zxvf "crictl-${CRICTL_VERSION}-linux-${CRICTL_ARCH}.tar.gz" -C /usr/local/bin
+rm -f "crictl-${CRICTL_VERSION}-linux-${CRICTL_ARCH}.tar.gz"
+
+cat <<EOF | sudo tee /etc/crictl.yaml
+runtime-endpoint: unix:///run/containerd/containerd.sock
+image-endpoint: unix:///run/containerd/containerd.sock
+timeout: 10
+debug: false
+EOF
+
+# 6. Cilium CLI
+CILIUM_CLI_VERSION=$(curl -s https://raw.githubusercontent.com/cilium/cilium-cli/main/stable.txt)
+CLI_ARCH=amd64
+if [ "$(uname -m)" = "aarch64" ]; then CLI_ARCH=arm64; fi
+curl -L --fail --remote-name-all "https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-linux-${CLI_ARCH}.tar.gz{,.sha256sum}"
+sha256sum --check "cilium-linux-${CLI_ARCH}.tar.gz.sha256sum"
+sudo tar xzvfC "cilium-linux-${CLI_ARCH}.tar.gz" /usr/local/bin
+rm "cilium-linux-${CLI_ARCH}.tar.gz"{,.sha256sum}
+
+# 7. Helm 3
+echo "Installing Helm 3..."
+curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+chmod 700 get_helm.sh
+./get_helm.sh
+rm get_helm.sh
