@@ -59,14 +59,14 @@ build {
   }
 
   provisioner "file" {
-    source      = "../scripts/common.sh"
-    destination = "/tmp/common.sh"
+    source      = "../scripts/common-ami.sh"
+    destination = "/tmp/common-ami.sh"
   }
 
   provisioner "shell" {
     inline = [
-      "chmod +x /tmp/common.sh",
-      "sudo bash -c 'export KUBERNETES_VERSION=v1.34; /tmp/common.sh'",
+      "chmod +x /tmp/common-ami.sh",
+      "sudo bash -c 'export KUBERNETES_VERSION=v1.34; /tmp/common-ami.sh'",
       
       # Now, additionally pre-install AWS CLI and Unzip so worker nodes don't need to do it at boot
       "echo 'Pre-installing unzip and awscli v2...'",
