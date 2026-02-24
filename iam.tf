@@ -18,7 +18,7 @@ resource "aws_iam_role" "node_role" {
 
 resource "aws_iam_policy" "node_policy" {
   name        = "k8s-node-policy"
-  description = "Allows k8s nodes to modify their own network interfaces (required for Cilium routing)"
+  description = "Allows k8s nodes to manage network interfaces and IP allocation (required for Cilium AWS ENI mode)"
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -27,6 +27,19 @@ resource "aws_iam_policy" "node_policy" {
         Action = [
           "ec2:ModifyInstanceAttribute",
           "ec2:DescribeInstances",
+          "ec2:DescribeNetworkInterfaces",
+          "ec2:DescribeSubnets",
+          "ec2:DescribeVpcs",
+          "ec2:DescribeInstanceTypes",
+          "ec2:CreateNetworkInterface",
+          "ec2:AttachNetworkInterface",
+          "ec2:DetachNetworkInterface",
+          "ec2:DeleteNetworkInterface",
+          "ec2:ModifyNetworkInterfaceAttribute",
+          "ec2:AssignPrivateIpAddresses",
+          "ec2:UnassignPrivateIpAddresses",
+          "ec2:CreateTags",
+          "ec2:DescribeTags",
           "ec2:TerminateInstances"
         ]
         Effect   = "Allow"

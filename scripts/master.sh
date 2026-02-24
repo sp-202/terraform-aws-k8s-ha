@@ -64,12 +64,15 @@ rm cilium-linux-${CLI_ARCH}.tar.gz{,.sha256sum}
 # Install Cilium
 cilium install \
   --version 1.16.1 \
-  --set ipam.operator.clusterPoolIPv4PodCIDRList="$POD_CIDR" \
-  --set ipv4NativeRoutingCIDR="192.168.0.0/16" \
+  --set ipam.mode=aws-eni \
+  --set eni.enabled=true \
+  --set tunnel.enabled=disabled \
   --set routingMode=native \
-  --set autoDirectNodeRoutes=false \
+  --set ipv4NativeRoutingCIDR="10.0.0.0/16" \
+  --set kubeProxyReplacement=true \
   --set hubble.relay.enabled=true \
-  --set hubble.ui.enabled=true
+  --set hubble.ui.enabled=true \
+  --set eni.awsEnableInstanceTypeDetails=true
 sleep 60
 cilium status --wait || true
 

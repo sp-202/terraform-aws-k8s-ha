@@ -27,6 +27,7 @@ resource "aws_instance" "master" {
   key_name      = aws_key_pair.k8s_key.key_name
 
   vpc_security_group_ids = [aws_security_group.master_sg.id]
+  iam_instance_profile   = aws_iam_instance_profile.node_profile.name
   source_dest_check      = false
 
   # Master 80GB EBS Root Volume
@@ -75,4 +76,10 @@ resource "aws_instance" "master" {
     Name = "k8s-master"
     Role = "master"
   }
+
+  depends_on = [
+    aws_subnet.pods,
+    aws_route_table_association.public,
+    aws_iam_role_policy_attachment.node_attach
+  ]
 }

@@ -9,6 +9,12 @@ resource "aws_vpc" "main" {
   }
 }
 
+# Secondary CIDR for Pods
+resource "aws_vpc_ipv4_cidr_block_association" "pods" {
+  vpc_id     = aws_vpc.main.id
+  cidr_block = "10.244.0.0/16"
+}
+
 # Internet Gateway
 resource "aws_internet_gateway" "main" {
   vpc_id = aws_vpc.main.id
@@ -26,7 +32,8 @@ resource "aws_subnet" "public" {
   map_public_ip_on_launch = true
 
   tags = {
-    Name = "k8s-public-subnet"
+    Name                          = "k8s-public-subnet"
+    "cilium.io/no-eni-allocation" = "true"
   }
 }
 
@@ -37,7 +44,23 @@ resource "aws_subnet" "private" {
   availability_zone = "${var.aws_region}a"
 
   tags = {
-    Name = "k8s-private-subnet-1"
+    Name                          = "k8s-private-subnet-1"
+    "cilium.io/no-eni-allocation" = "true"
+  }
+}
+
+# Pod Subnet (Secondary CIDR)
+resource "aws_subnet" "pods" {
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = "10.244.0.0/16"
+  availability_zone = "${var.aws_region}a"
+
+  # Ensure the CIDR association happens first
+  depends_on = [aws_vpc_ipv4_cidr_block_association.pods]
+
+  tags = {
+    Name                              = "k8s-pod-subnet"
+    "kubernetes.io/role/internal-elb" = "1"
   }
 }
 
@@ -97,6 +120,11 @@ resource "aws_route_table" "private" {
 
 resource "aws_route_table_association" "private" {
   subnet_id      = aws_subnet.private.id
+  route_table_id = aws_route_table.private.id
+}
+
+resource "aws_route_table_association" "pods" {
+  subnet_id      = aws_subnet.pods.id
   route_table_id = aws_route_table.private.id
 }
 

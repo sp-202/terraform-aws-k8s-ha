@@ -37,14 +37,15 @@ export KUBECONFIG=/etc/kubernetes/admin.conf
 # Install Cilium
 cilium install \
   --version 1.16.1 \
-  --set ipam.operator.clusterPoolIPv4PodCIDRList="$POD_CIDR" \
-  --set ipv4NativeRoutingCIDR="192.168.0.0/16" \
+  --set ipam.mode=aws-eni \
+  --set eni.enabled=true \
+  --set tunnel.enabled=disabled \
   --set routingMode=native \
-  --set autoDirectNodeRoutes=false \
+  --set ipv4NativeRoutingCIDR="10.0.0.0/16" \
   --set kubeProxyReplacement=true \
-  --set l2announcements.enabled=true \
   --set hubble.relay.enabled=true \
-  --set hubble.ui.enabled=true
+  --set hubble.ui.enabled=true \
+  --set eni.awsEnableInstanceTypeDetails=true
 sleep 30
 
 # Install AWS Node Termination Handler
@@ -57,16 +58,6 @@ helm upgrade --install aws-node-termination-handler \
   --set enableRebalanceMonitoring=true \
   eks/aws-node-termination-handler
 
-# ------ NEW: MetalLB Install ------ 
-echo "Installing MetalLB..."
-helm repo add metallb https://metallb.github.io/metallb
-helm repo update
-helm upgrade --install metallb metallb/metallb \
-  --namespace metallb-system --create-namespace \
-  --set speaker.tolerateMaster=true \
-  --set speaker.frr.enabled=false \
-  --set controller.nodeSelector."node-role\.kubernetes\.io/control-plane"="" \
-  --set speaker.nodeSelector."kubernetes\.io/os"=linux
 
 # ------ NEW: OpenEBS Install ------
 echo "Installing OpenEBS..."
