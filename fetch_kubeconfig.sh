@@ -14,7 +14,7 @@ echo "Waiting for SSH to become available..."
 
 # Wait up to 300 seconds for SSH
 count=0
-while ! ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa ubuntu@$MASTER_IP "echo 'SSH Ready'" &>/dev/null; do
+while ! ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 ubuntu@$MASTER_IP "echo 'SSH Ready'" &>/dev/null; do
   echo "Waiting for master to be reachable via SSH..."
   sleep 10
   count=$((count+1))
@@ -28,7 +28,7 @@ echo "SSH is ready. Fetching Kubeconfig..."
 
 # Try to fetch config with retries (in case k3s is still installing)
 count=0
-while ! scp -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa ubuntu@$MASTER_IP:/home/ubuntu/.kube/config ./k3s.yaml &>/dev/null; do
+while ! scp -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 ubuntu@$MASTER_IP:/home/ubuntu/.kube/config ./k3s.yaml &>/dev/null; do
   echo "Waiting for k3s config to be available on master..."
   sleep 10
   count=$((count+1))
