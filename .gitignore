@@ -8,3 +8,4 @@ k3s.yaml
 kubeconfig
 *.pem
 .DS_Store
+kubeconfig.yaml
