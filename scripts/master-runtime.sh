@@ -1,12 +1,11 @@
 #!/bin/bash
-#
-# Setup for Control Plane (Master) servers - Runtime optimized
+# Setup for Control Plane (Master) servers - Runtime optimized - V2 (Forced Refresh)
 
 set -euxo pipefail
 
 PUBLIC_IP_ACCESS="false"
 NODENAME=$(hostname -s)
-POD_CIDR="10.0.0.0/16"
+POD_CIDR="10.244.0.0/16"
 
 sudo kubeadm config images pull
 
@@ -44,19 +43,26 @@ export KUBECONFIG=/etc/kubernetes/admin.conf
 kubectl -n kube-system delete daemonset kube-proxy 2>/dev/null || true
 kubectl -n kube-system delete configmap kube-proxy 2>/dev/null || true
 
+# Fix environment for Cilium CLI under cloud-init
+export HOME=/root
+
 # Install Cilium
 cilium install \
-  --version 1.16.1 \
+  --version 1.19.1 \
   --set ipam.mode=eni \
   --set eni.enabled=true \
   --set routingMode=native \
-  --set ipv4NativeRoutingCIDR="10.0.0.0/16" \
+  --set ipv4NativeRoutingCIDR="10.0.0.0/8" \
   --set kubeProxyReplacement=true \
   --set nodePort.enabled=true \
   --set hubble.relay.enabled=true \
   --set hubble.ui.enabled=true \
-  --set eni.awsEnableInstanceTypeDetails=true
-sleep 30
+  --set eni.awsEnableInstanceTypeDetails=true \
+  --set 'eni.nodeSpec.subnetTags[0]=cilium-pod-subnet=1'
+
+echo "Waiting for Cilium to initialize..."
+sleep 20
+cilium status --wait || true
 
 # Install AWS Node Termination Handler
 echo "Installing AWS Node Termination Handler..."

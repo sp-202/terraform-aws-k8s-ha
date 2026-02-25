@@ -1,6 +1,6 @@
 # Dedicated spark critical driver/worker nodes
 resource "aws_launch_template" "worker_spark_critical" {
-  name_prefix   = "k8s-spark-critical-"
+  name_prefix   = "${var.cluster_name}-spark-critical-"
   image_id      = data.aws_ami.golden.id
   instance_type = "i4g.8xlarge"
   key_name      = aws_key_pair.k8s_key.key_name
@@ -61,7 +61,7 @@ resource "aws_launch_template" "worker_spark_critical" {
   tag_specifications {
     resource_type = "instance"
     tags = {
-      Project = "k8s-cluster"
+      Project = var.cluster_name
       Name    = "spark-node"
       Role    = "spark-node"
     }
@@ -72,7 +72,7 @@ resource "aws_launch_template" "worker_spark_critical" {
 }
 
 resource "aws_autoscaling_group" "worker_spark_critical" {
-  name                = "k8s-spark-critical-asg"
+  name                = "${var.cluster_name}-spark-critical-asg"
   desired_capacity    = 1
   min_size            = 1
   max_size            = 1

@@ -1,6 +1,6 @@
 # General purpose k8s worker nodes
 resource "aws_launch_template" "k8s_worker_node" {
-  name_prefix   = "k8s-general-"
+  name_prefix   = "${var.cluster_name}-gp-"
   image_id      = data.aws_ami.golden.id
   instance_type = "im4gn.4xlarge"
   key_name      = aws_key_pair.k8s_key.key_name
@@ -61,7 +61,7 @@ resource "aws_launch_template" "k8s_worker_node" {
   tag_specifications {
     resource_type = "instance"
     tags = {
-      Project = "k8s-cluster"
+      Project = var.cluster_name
       Name    = "k8s-gp-node"
       Role    = "k8s-gp-node"
     }
@@ -72,7 +72,7 @@ resource "aws_launch_template" "k8s_worker_node" {
 }
 
 resource "aws_autoscaling_group" "k8s_worker_node" {
-  name                = "k8s-general-asg"
+  name                = "${var.cluster_name}-gp-asg"
   desired_capacity    = 1
   min_size            = 1
   max_size            = 1

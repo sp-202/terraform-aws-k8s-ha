@@ -1,5 +1,5 @@
 resource "aws_launch_template" "worker" {
-  name_prefix   = "k8s-worker-lt-"
+  name_prefix   = "${var.cluster_name}-worker-lt-"
   image_id      = data.aws_ami.golden.id
   instance_type = var.worker_instance_type
   key_name      = aws_key_pair.k8s_key.key_name
@@ -76,7 +76,7 @@ resource "aws_launch_template" "worker" {
   tag_specifications {
     resource_type = "instance"
     tags = {
-      Project = "k8s-cluster"
+      Project = var.cluster_name
       Name    = "spark-worker"
       Role    = "spark-worker"
     }
@@ -89,7 +89,7 @@ resource "aws_launch_template" "worker" {
 
 # k8s spark worker nodes
 resource "aws_autoscaling_group" "workers" {
-  name                = "k8s-workers-asg"
+  name                = "${var.cluster_name}-workers-asg"
   desired_capacity    = var.worker_count
   min_size            = var.worker_min
   max_size            = var.worker_max

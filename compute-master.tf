@@ -1,5 +1,5 @@
 resource "aws_key_pair" "k8s_key" {
-  key_name   = "k8s-access-key"
+  key_name   = "${var.cluster_name}-access-key"
   public_key = file(var.ssh_public_key_path)
 }
 
@@ -25,6 +25,8 @@ resource "aws_instance" "master" {
   instance_type = var.master_instance_type
   subnet_id     = aws_subnet.public.id
   key_name      = aws_key_pair.k8s_key.key_name
+
+  user_data_replace_on_change = true
 
   vpc_security_group_ids = [aws_security_group.master_sg.id]
   iam_instance_profile   = aws_iam_instance_profile.node_profile.name
@@ -73,7 +75,7 @@ resource "aws_instance" "master" {
               EOF
 
   tags = {
-    Name = "k8s-master"
+    Name = "${var.cluster_name}-master"
     Role = "master"
   }
 

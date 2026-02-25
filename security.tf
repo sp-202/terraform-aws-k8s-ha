@@ -1,20 +1,20 @@
 resource "aws_security_group" "master_sg" {
-  name        = "k8s-master-sg"
+  name        = "${var.cluster_name}-master-sg"
   description = "Security group for K8s Master"
   vpc_id      = aws_vpc.main.id
 
   tags = {
-    Name = "k8s-master-sg"
+    Name = "${var.cluster_name}-master-sg"
   }
 }
 
 resource "aws_security_group" "worker_sg" {
-  name        = "k8s-worker-sg"
+  name        = "${var.cluster_name}-worker-sg"
   description = "Security group for K8s Workers"
   vpc_id      = aws_vpc.main.id
 
   tags = {
-    Name = "k8s-worker-sg"
+    Name = "${var.cluster_name}-worker-sg"
   }
 }
 

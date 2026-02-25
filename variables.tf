@@ -47,12 +47,6 @@ variable "worker_instance_type" {
   default     = "i4g.8xlarge" # 32 vCPU, 256 GiB RAM, 7.5TB NVMe
 }
 
-# variable "worker_count" {
-#   description = "Number of worker nodes"
-#   type        = number
-#   default     = 3
-# }
-
 variable "worker_count" {
   description = "Desired number of worker nodes"
   type        = number
@@ -62,6 +56,24 @@ variable "worker_count" {
     condition     = var.worker_count == 3
     error_message = "The desired worker_count MUST be exactly 3."
   }
+}
+
+variable "pod_cidr" {
+  description = "Secondary CIDR block for Kubernetes Pods"
+  type        = string
+  default     = "10.244.0.0/16"
+}
+
+variable "cluster_name" {
+  description = "Name of the Kubernetes cluster"
+  type        = string
+  default     = "k8s-ha-cluster"
+}
+
+variable "availability_zone" {
+  description = "AV Zone for deployment"
+  type        = string
+  default     = "us-east-1a"
 }
 
 variable "worker_min" {

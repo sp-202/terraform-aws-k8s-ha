@@ -50,30 +50,30 @@ sudo chown "$USER_ID":"$GROUP_ID" "$USER_HOME"/.kube/config
 # Export KUBECONFIG for the script to use the new admin.conf
 export KUBECONFIG=/etc/kubernetes/admin.conf
 
-# Install Claico Network Plugin Network 
-
-# Install Cilium CLI
-CILIUM_CLI_VERSION=$(curl -s https://raw.githubusercontent.com/cilium/cilium-cli/main/stable.txt)
-CLI_ARCH=amd64
-if [ "$(uname -m)" = "aarch64" ]; then CLI_ARCH=arm64; fi
-curl -L --fail --remote-name-all https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-linux-${CLI_ARCH}.tar.gz{,.sha256sum}
-sha256sum --check cilium-linux-${CLI_ARCH}.tar.gz.sha256sum
-sudo tar xzvfC cilium-linux-${CLI_ARCH}.tar.gz /usr/local/bin
-rm cilium-linux-${CLI_ARCH}.tar.gz{,.sha256sum}
-
 # Install Cilium
+
+# Cilium CLI is already installed in the Golden AMI (common-ami.sh)
+export HOME=/root
+
+# Remove kube-proxy if it got installed
+kubectl -n kube-system delete daemonset kube-proxy 2>/dev/null || true
+kubectl -n kube-system delete configmap kube-proxy 2>/dev/null || true
+
 cilium install \
-  --version 1.16.1 \
-  --set ipam.mode=aws-eni \
+  --version 1.19.1 \
+  --set ipam.mode=eni \
   --set eni.enabled=true \
-  --set tunnel.enabled=disabled \
   --set routingMode=native \
-  --set ipv4NativeRoutingCIDR="10.0.0.0/16" \
+  --set ipv4NativeRoutingCIDR="10.0.0.0/8" \
   --set kubeProxyReplacement=true \
+  --set nodePort.enabled=true \
   --set hubble.relay.enabled=true \
   --set hubble.ui.enabled=true \
-  --set eni.awsEnableInstanceTypeDetails=true
-sleep 60
+  --set eni.awsEnableInstanceTypeDetails=true \
+  --set 'eni.nodeSpec.subnetTags[0]=cilium-pod-subnet=1'
+
+echo "Waiting for Cilium to initialize..."
+sleep 20
 cilium status --wait || true
 
 # Install Helm

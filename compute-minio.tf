@@ -1,5 +1,5 @@
 resource "aws_launch_template" "minio_worker" {
-  name_prefix   = "k8s-minio-"
+  name_prefix   = "${var.cluster_name}-minio-"
   image_id      = data.aws_ami.golden.id
   instance_type = "im4gn.8xlarge"
   key_name      = aws_key_pair.k8s_key.key_name
@@ -62,7 +62,7 @@ resource "aws_launch_template" "minio_worker" {
   tag_specifications {
     resource_type = "instance"
     tags = {
-      Project = "k8s-cluster"
+      Project = var.cluster_name
       Name    = "minio-worker"
       Role    = "minio-worker"
     }
@@ -73,7 +73,7 @@ resource "aws_launch_template" "minio_worker" {
 }
 
 resource "aws_autoscaling_group" "minio_worker" {
-  name                = "k8s-minio-asg"
+  name                = "${var.cluster_name}-minio-asg"
   desired_capacity    = 1
   min_size            = 1
   max_size            = 1

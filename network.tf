@@ -12,7 +12,7 @@ resource "aws_vpc" "main" {
 # Secondary CIDR for Pods
 resource "aws_vpc_ipv4_cidr_block_association" "pods" {
   vpc_id     = aws_vpc.main.id
-  cidr_block = "10.244.0.0/16"
+  cidr_block = var.pod_cidr
 }
 
 # Internet Gateway
@@ -28,11 +28,11 @@ resource "aws_internet_gateway" "main" {
 resource "aws_subnet" "public" {
   vpc_id                  = aws_vpc.main.id
   cidr_block              = var.public_subnet_cidr
-  availability_zone       = "${var.aws_region}a"
+  availability_zone       = var.availability_zone
   map_public_ip_on_launch = true
 
   tags = {
-    Name                          = "k8s-public-subnet"
+    Name                          = "${var.cluster_name}-public-subnet"
     "cilium.io/no-eni-allocation" = "true"
   }
 }
@@ -41,10 +41,10 @@ resource "aws_subnet" "public" {
 resource "aws_subnet" "private" {
   vpc_id            = aws_vpc.main.id
   cidr_block        = var.private_subnet_cidr
-  availability_zone = "${var.aws_region}a"
+  availability_zone = var.availability_zone
 
   tags = {
-    Name                          = "k8s-private-subnet-1"
+    Name                          = "${var.cluster_name}-private-subnet-1"
     "cilium.io/no-eni-allocation" = "true"
   }
 }
@@ -52,15 +52,16 @@ resource "aws_subnet" "private" {
 # Pod Subnet (Secondary CIDR)
 resource "aws_subnet" "pods" {
   vpc_id            = aws_vpc.main.id
-  cidr_block        = "10.244.0.0/16"
-  availability_zone = "${var.aws_region}a"
+  cidr_block        = var.pod_cidr
+  availability_zone = var.availability_zone
 
   # Ensure the CIDR association happens first
   depends_on = [aws_vpc_ipv4_cidr_block_association.pods]
 
   tags = {
-    Name                              = "k8s-pod-subnet"
+    Name                              = "${var.cluster_name}-pod-subnet"
     "kubernetes.io/role/internal-elb" = "1"
+    "cilium-pod-subnet"               = "1"
   }
 }
 

@@ -31,9 +31,10 @@ resource "aws_iam_policy" "node_policy" {
           "ec2:DescribeSubnets",
           "ec2:DescribeVpcs",
           "ec2:DescribeInstanceTypes",
-          "ec2:DescribeInstanceTypeOfferings",  # previously missing
-          "ec2:DescribeSecurityGroups",          # THIS was the crash cause
-          "ec2:DescribeAvailabilityZones",       # needed for ENI subnet selection
+          "ec2:DescribeInstanceTypeOfferings", # previously missing
+          "ec2:DescribeSecurityGroups",        # THIS was the crash cause
+          "ec2:DescribeAvailabilityZones",     # needed for ENI subnet selection
+          "ec2:DescribeRouteTables",           # needed by cilium-operator ENI allocator
           "ec2:CreateNetworkInterface",
           "ec2:AttachNetworkInterface",
           "ec2:DetachNetworkInterface",
