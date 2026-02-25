@@ -44,7 +44,7 @@ resource "aws_launch_template" "minio_worker" {
               JOIN_SUCCESS=false
 
               while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-                  if sudo kubeadm join ${aws_instance.master.public_ip}:6443 --token ${local.kubeadm_token} --discovery-token-unsafe-skip-ca-verification --node-name minio-worker-$INSTANCE_ID; then
+                  if sudo kubeadm join ${aws_instance.master.private_ip}:6443 --token ${local.kubeadm_token} --discovery-token-unsafe-skip-ca-verification --node-name minio-worker-$INSTANCE_ID; then
                       JOIN_SUCCESS=true
                       break
                   fi

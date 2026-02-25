@@ -54,7 +54,7 @@ resource "aws_launch_template" "worker" {
 
               while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
                   echo "Attempting to join cluster (Attempt $((RETRY_COUNT+1))/$MAX_RETRIES)..."
-                  if sudo kubeadm join ${aws_instance.master.public_ip}:6443 --token ${local.kubeadm_token} --discovery-token-unsafe-skip-ca-verification --node-name spark-worker-$INSTANCE_ID; then
+                  if sudo kubeadm join ${aws_instance.master.private_ip}:6443 --token ${local.kubeadm_token} --discovery-token-unsafe-skip-ca-verification --node-name spark-worker-$INSTANCE_ID; then
                       JOIN_SUCCESS=true
                       break
                   fi

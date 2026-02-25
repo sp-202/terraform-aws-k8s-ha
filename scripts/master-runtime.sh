@@ -6,7 +6,7 @@ set -euxo pipefail
 
 PUBLIC_IP_ACCESS="false"
 NODENAME=$(hostname -s)
-POD_CIDR="10.244.0.0/16"
+POD_CIDR="10.0.0.0/16"
 
 sudo kubeadm config images pull
 
@@ -18,8 +18,14 @@ if [[ "$PUBLIC_IP_ACCESS" == "false" ]]; then
     MASTER_PRIVATE_IP=$(ip route get 8.8.8.8 | awk -F"src " 'NR==1{split($2,a," ");print a[1]}')
     sudo kubeadm init --apiserver-advertise-address="$MASTER_PRIVATE_IP" --apiserver-cert-extra-sans="$MASTER_PRIVATE_IP,127.0.0.1,localhost" --pod-network-cidr="$POD_CIDR" --node-name "$NODENAME" --ignore-preflight-errors Swap
 elif [[ "$PUBLIC_IP_ACCESS" == "true" ]]; then
+    MASTER_PRIVATE_IP=$(ip route get 8.8.8.8 | awk -F"src " 'NR==1{split($2,a," ");print a[1]}')
     MASTER_PUBLIC_IP=$(curl ifconfig.me && echo "")
-    sudo kubeadm init --control-plane-endpoint="$MASTER_PUBLIC_IP" --apiserver-cert-extra-sans="$MASTER_PUBLIC_IP,127.0.0.1,localhost" --pod-network-cidr="$POD_CIDR" --node-name "$NODENAME" --ignore-preflight-errors Swap
+    sudo kubeadm init \
+        --apiserver-advertise-address="0.0.0.0" \
+        --apiserver-cert-extra-sans="$MASTER_PUBLIC_IP,$MASTER_PRIVATE_IP,127.0.0.1,localhost" \
+        --pod-network-cidr="$POD_CIDR" \
+        --node-name "$NODENAME" \
+        --ignore-preflight-errors Swap
 else
     echo "Error: MASTER_PUBLIC_IP has an invalid value: $PUBLIC_IP_ACCESS"
     exit 1
@@ -34,15 +40,19 @@ sudo cp /etc/kubernetes/admin.conf "$USER_HOME"/.kube/config
 sudo chown "$USER_ID":"$GROUP_ID" "$USER_HOME"/.kube/config
 export KUBECONFIG=/etc/kubernetes/admin.conf
 
+# Remove kube-proxy if it got installed anyway
+kubectl -n kube-system delete daemonset kube-proxy 2>/dev/null || true
+kubectl -n kube-system delete configmap kube-proxy 2>/dev/null || true
+
 # Install Cilium
 cilium install \
   --version 1.16.1 \
-  --set ipam.mode=aws-eni \
+  --set ipam.mode=eni \
   --set eni.enabled=true \
-  --set tunnel.enabled=disabled \
   --set routingMode=native \
   --set ipv4NativeRoutingCIDR="10.0.0.0/16" \
   --set kubeProxyReplacement=true \
+  --set nodePort.enabled=true \
   --set hubble.relay.enabled=true \
   --set hubble.ui.enabled=true \
   --set eni.awsEnableInstanceTypeDetails=true
