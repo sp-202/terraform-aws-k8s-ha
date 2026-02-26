@@ -33,6 +33,14 @@ resource "aws_launch_template" "k8s_worker_node" {
               chmod +x /root/common-runtime.sh
               /root/common-runtime.sh
               
+              sudo mkdir -p /var/openebs/local/postgres-data
+              sudo mkdir -p /var/openebs/local/airflow-shared
+
+              if [ -d "/mnt/spark-nvme" ]; then
+                sudo mkdir -p /mnt/spark-nvme/starrocks-fe
+                sudo mkdir -p /mnt/spark-nvme/starrocks-be
+              fi
+
               # Wait for master to be ready
               sleep 60
 

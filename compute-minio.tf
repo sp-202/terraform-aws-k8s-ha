@@ -33,6 +33,10 @@ resource "aws_launch_template" "minio_worker" {
               chmod +x /root/common-runtime.sh
               /root/common-runtime.sh
               
+              if [ -d "/mnt/spark-nvme" ]; then
+                sudo mkdir -p /mnt/spark-nvme/minio
+              fi
+
               # Wait for master to be ready
               sleep 60
 
