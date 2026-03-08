@@ -2,7 +2,7 @@
 resource "aws_launch_template" "worker_spark_critical" {
   name_prefix   = "${var.cluster_name}-spark-critical-"
   image_id      = data.aws_ami.golden.id
-  instance_type = "i4g.8xlarge"
+  instance_type = var.spark_critical_instance_type
   key_name      = aws_key_pair.k8s_key.key_name
 
   network_interfaces {

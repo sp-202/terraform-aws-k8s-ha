@@ -27,3 +27,7 @@ This document tracks the critical technical hurdles encountered during the evolu
 ## 5. Storage Class Failures (OpenEBS)
 **Issue**: Pods requiring persistent storage remained in `Pending` because no `StorageClass` was present or the default was not set correctly.
 **Resolution**: Integrated `openebs` installation into the `master-runtime.sh` script with the `localprovisioner` enabled. This provides a `openebs-hostpath` storage class that utilizes the high-performance local NVMe storage we configured.
+
+## 6. Control Plane Deadlock (Cilium AWS ENI IPAM)
+**Issue**: Cilium AWS ENI IPAM assigned secondary IPs to the primary master ENI (e.g., `ens5`). The Linux kernel arbitrarily chose a secondary pod IP (e.g., `10.0.1.109`) as the source IP for local traffic to the master's primary IP (`10.0.1.188`). Traffic from the pod IP hit Cilium's policy routing tables and was dropped, effectively blackholing `localhost -> 10.0.1.188` traffic. This caused `etcd` to time out and the Kubernetes API server to crash-loop.
+**Resolution**: Forced the local routing table to use the primary IP as the source. Appended a permanent `ip route replace local <primary-ip> dev <device> table local proto kernel scope host src <primary-ip>` rule to the `common-runtime.sh` boot script so all traffic inherently uses the correct source IP before Cilium is ever installed.

@@ -47,15 +47,34 @@ variable "worker_instance_type" {
   default     = "r6gd.12xlarge"
 }
 
+variable "gp_worker_instance_type" {
+  description = "Instance type for the general purpose K8s worker nodes"
+  type        = string
+  default     = "im4gn.4xlarge"
+}
+
+variable "spark_critical_instance_type" {
+  description = "Instance type for the dedicated spark critical nodes"
+  type        = string
+  default     = "i4g.8xlarge"
+}
+
+variable "minio_instance_type" {
+  description = "Instance type for the MinIO dedicated node"
+  type        = string
+  default     = "im4gn.8xlarge"
+}
+
+variable "spot_overrides" {
+  description = "List of instance types for the spot fleet overrides"
+  type        = list(string)
+  default     = ["r6gd.12xlarge", "i4g.8xlarge"]
+}
+
 variable "worker_count" {
   description = "Desired number of worker nodes"
   type        = number
   default     = 3
-
-  validation {
-    condition     = var.worker_count == 3
-    error_message = "The desired worker_count MUST be exactly 3."
-  }
 }
 
 variable "pod_cidr" {
@@ -80,22 +99,12 @@ variable "worker_min" {
   description = "Strict minimum workers"
   type        = number
   default     = 3
-
-  validation {
-    condition     = var.worker_min == 3
-    error_message = "The worker_min MUST be exactly 3."
-  }
 }
 
 variable "worker_max" {
   description = "Strict maximum workers"
   type        = number
   default     = 4
-
-  validation {
-    condition     = var.worker_max == 4
-    error_message = "The worker_max MUST be exactly 4."
-  }
 }
 
 # variable "cloudflare_api_token" {

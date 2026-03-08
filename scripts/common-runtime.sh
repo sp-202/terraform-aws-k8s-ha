@@ -20,6 +20,11 @@ fi
 
 # Retrieve the default interface IP address and set it for kubelet
 local_ip="$(ip -j route get 8.8.8.8 | jq -r '.[0].prefsrc')"
+local_dev="$(ip -j route get 8.8.8.8 | jq -r '.[0].dev')"
+
+# Workaround for Cilium AWS ENI IPAM: Force local traffic to use primary IP as source
+# Prevents etcd/kube-apiserver crashloop by ensuring localhost traffic doesn't get assigned a secondary Pod IP
+sudo ip route replace local $local_ip dev $local_dev table local proto kernel scope host src $local_ip
 
 # Write the local IP address to the kubelet default configuration file
 cat > /etc/default/kubelet << EOF

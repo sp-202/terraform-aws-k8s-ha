@@ -102,9 +102,12 @@ resource "aws_autoscaling_group" "workers" {
         version            = "$Latest"
       }
 
-      # User specifically requested Spot fleet to be primarily i4g.8xlarge
-      override { instance_type = "r6gd.12xlarge" } # Fallback equivalent
-      override { instance_type = "i4g.8xlarge" }
+      dynamic "override" {
+        for_each = var.spot_overrides
+        content {
+          instance_type = override.value
+        }
+      }
     }
 
     instances_distribution {

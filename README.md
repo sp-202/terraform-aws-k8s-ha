@@ -24,6 +24,14 @@ The cluster automatically labels nodes based on their purpose:
 - **Spark Nodes**: Dedicated nodes for Spark critical/spot workloads.
 - **MinIO Nodes**: Optimized for S3-compatible object storage.
 
+## 2. Component Versions
+To guarantee extreme performance and compatibility, the cluster instances lock dependencies at specific, well-tested versions:
+- **Kubernetes**: v1.34.x
+- **OS/Image**: Custom pre-baked **Ubuntu 24.04 ARM64** (Built via Packer)
+- **EC2 Instance Class**: Fully optimized for AWS Graviton (ARM64) instances 
+- **Cilium CNI**: v1.19.1 (Configured for AWS ENI IPAM)
+- **Container Runtime**: containerd v2.0.x
+
 ## 🚀 Deployment
 
 ### Prerequisites
@@ -39,13 +47,20 @@ packer build k8s-golden-ami.pkr.hcl
 ```
 
 ### 2. Provision the Cluster
+The infrastructure supports parameterized deployments via tfvars to run scaled-down tests (saving costs) or full-scale production clusters.
+
 ```bash
 # Return to root directory
 chmod +x deploy.sh
-./deploy.sh
+
+# Option A: Deploy Development/Testing Environment (Small instances)
+terraform apply -var-file=dev.tfvars
+
+# Option B: Deploy Production Environment (Large instances)
+terraform apply -var-file=prod.tfvars
 ```
 
-The script will automatically provision the VPC, Master Node, and multiple Auto Scaling Groups, then fetch the `kubeconfig` to your local machine.
+*(Note: `deploy.sh` serves as a wrapper script and currently defaults dynamically. Adjust the script explicitly if executing via bash).*
 
 ## 🔧 Post-Deployment
 Access the cluster:

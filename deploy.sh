@@ -7,7 +7,8 @@ echo "---------------------------------------------------"
 echo "Phase 1: Provisioning Infrastructure with Terraform"
 echo "---------------------------------------------------"
 terraform init
-terraform apply -auto-approve
+terraform apply -var-file=dev.tfvars
+# terraform apply -auto-approve
 
 echo "---------------------------------------------------"
 echo "Phase 2: Verifying Cluster and Fetching Kubeconfig"

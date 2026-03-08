@@ -1,7 +1,7 @@
 resource "aws_launch_template" "minio_worker" {
   name_prefix   = "${var.cluster_name}-minio-"
   image_id      = data.aws_ami.golden.id
-  instance_type = "im4gn.8xlarge"
+  instance_type = var.minio_instance_type
   key_name      = aws_key_pair.k8s_key.key_name
 
   network_interfaces {

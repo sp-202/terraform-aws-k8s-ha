@@ -2,7 +2,7 @@
 resource "aws_launch_template" "k8s_worker_node" {
   name_prefix   = "${var.cluster_name}-gp-"
   image_id      = data.aws_ami.golden.id
-  instance_type = "im4gn.4xlarge"
+  instance_type = var.gp_worker_instance_type
   key_name      = aws_key_pair.k8s_key.key_name
 
   network_interfaces {
