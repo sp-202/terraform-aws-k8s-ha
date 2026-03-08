@@ -42,9 +42,9 @@ variable "master_instance_type" {
 }
 
 variable "worker_instance_type" {
-  description = "Instance type for the K8s worker nodes"
+  description = "Instance type for the K8s worker nodes (Spot Fleet Base)"
   type        = string
-  default     = "i4g.8xlarge" # 32 vCPU, 256 GiB RAM, 7.5TB NVMe
+  default     = "r6gd.12xlarge"
 }
 
 variable "worker_count" {
@@ -59,9 +59,9 @@ variable "worker_count" {
 }
 
 variable "pod_cidr" {
-  description = "Secondary CIDR block for Kubernetes Pods"
+  description = "CIDR block for Kubernetes Pods (within VPC)"
   type        = string
-  default     = "10.244.0.0/16"
+  default     = "10.0.16.0/20"
 }
 
 variable "cluster_name" {

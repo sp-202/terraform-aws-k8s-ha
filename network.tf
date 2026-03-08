@@ -9,11 +9,7 @@ resource "aws_vpc" "main" {
   }
 }
 
-# Secondary CIDR for Pods
-resource "aws_vpc_ipv4_cidr_block_association" "pods" {
-  vpc_id     = aws_vpc.main.id
-  cidr_block = var.pod_cidr
-}
+
 
 # Internet Gateway
 resource "aws_internet_gateway" "main" {
@@ -49,14 +45,11 @@ resource "aws_subnet" "private" {
   }
 }
 
-# Pod Subnet (Secondary CIDR)
+# Pod Subnet (within main VPC)
 resource "aws_subnet" "pods" {
   vpc_id            = aws_vpc.main.id
   cidr_block        = var.pod_cidr
   availability_zone = var.availability_zone
-
-  # Ensure the CIDR association happens first
-  depends_on = [aws_vpc_ipv4_cidr_block_association.pods]
 
   tags = {
     Name                              = "${var.cluster_name}-pod-subnet"

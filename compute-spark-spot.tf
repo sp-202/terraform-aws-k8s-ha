@@ -103,9 +103,8 @@ resource "aws_autoscaling_group" "workers" {
       }
 
       # User specifically requested Spot fleet to be primarily i4g.8xlarge
+      override { instance_type = "r6gd.12xlarge" } # Fallback equivalent
       override { instance_type = "i4g.8xlarge" }
-      override { instance_type = "i4g.16xlarge" }  # Fallback massive storage
-      override { instance_type = "im4gn.8xlarge" } # Fallback equivalent
     }
 
     instances_distribution {
