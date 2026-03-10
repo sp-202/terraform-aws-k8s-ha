@@ -7,6 +7,10 @@ PUBLIC_IP_ACCESS="false"
 NODENAME=$(hostname -s)
 POD_CIDR="10.0.0.0/8"
 
+# Ensure etcd data dir exists with correct permissions
+sudo mkdir -p /var/lib/etcd
+sudo chmod 0700 /var/lib/etcd
+
 sudo kubeadm config images pull
 
 if [ ! -d "/sys/fs/cgroup/cgroup.procs" ]; then
@@ -15,20 +19,50 @@ fi
 
 if [[ "$PUBLIC_IP_ACCESS" == "false" ]]; then
     MASTER_PRIVATE_IP=$(ip route get 8.8.8.8 | awk -F"src " 'NR==1{split($2,a," ");print a[1]}')
-    sudo kubeadm init --apiserver-advertise-address="$MASTER_PRIVATE_IP" --apiserver-cert-extra-sans="$MASTER_PRIVATE_IP,127.0.0.1,localhost" --pod-network-cidr="$POD_CIDR" --node-name "$NODENAME" --ignore-preflight-errors Swap
+    ADVERTISE_ADDRESS="$MASTER_PRIVATE_IP"
+    CERT_SANS="$MASTER_PRIVATE_IP,127.0.0.1,localhost"
 elif [[ "$PUBLIC_IP_ACCESS" == "true" ]]; then
     MASTER_PRIVATE_IP=$(ip route get 8.8.8.8 | awk -F"src " 'NR==1{split($2,a," ");print a[1]}')
     MASTER_PUBLIC_IP=$(curl ifconfig.me && echo "")
-    sudo kubeadm init \
-        --apiserver-advertise-address="0.0.0.0" \
-        --apiserver-cert-extra-sans="$MASTER_PUBLIC_IP,$MASTER_PRIVATE_IP,127.0.0.1,localhost" \
-        --pod-network-cidr="$POD_CIDR" \
-        --node-name "$NODENAME" \
-        --ignore-preflight-errors Swap
+    ADVERTISE_ADDRESS="0.0.0.0"
+    CERT_SANS="$MASTER_PUBLIC_IP,$MASTER_PRIVATE_IP,127.0.0.1,localhost"
 else
-    echo "Error: MASTER_PUBLIC_IP has an invalid value: $PUBLIC_IP_ACCESS"
+    echo "Error: PUBLIC_IP_ACCESS has an invalid value: $PUBLIC_IP_ACCESS"
     exit 1
 fi
+
+# Generate kubeadm config with etcd tuning for cloud environments
+cat > /tmp/kubeadm-config.yaml << KUBEADM_EOF
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+networking:
+  podSubnet: "$POD_CIDR"
+apiServer:
+  certSANs:
+$(for san in $(echo $CERT_SANS | tr ',' ' '); do echo "    - $san"; done)
+etcd:
+  local:
+    dataDir: /var/lib/etcd
+    extraArgs:
+      heartbeat-interval: "500"
+      election-timeout: "5000"
+      quota-backend-bytes: "2147483648"
+      auto-compaction-retention: "1"
+      snapshot-count: "5000"
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: "$ADVERTISE_ADDRESS"
+nodeRegistration:
+  name: "$NODENAME"
+  ignorePreflightErrors:
+    - Swap
+bootstrapTokens:
+  - token: "__BOOTSTRAP_TOKEN__"
+KUBEADM_EOF
+
+sudo kubeadm init --config /tmp/kubeadm-config.yaml
 
 USER_HOME="/home/ubuntu"
 USER_ID=$(id -u ubuntu)
@@ -74,8 +108,11 @@ helm upgrade --install aws-node-termination-handler \
   --set enableRebalanceMonitoring=true \
   eks/aws-node-termination-handler
 
+# Wait for I/O to settle before next install
+echo "Waiting for I/O to settle before OpenEBS install..."
+sleep 30
 
-# ------ NEW: OpenEBS Install ------
+# ------ OpenEBS Install ------
 echo "Installing OpenEBS..."
 helm repo add openebs https://openebs.github.io/charts
 helm repo update

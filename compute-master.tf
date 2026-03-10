@@ -39,6 +39,14 @@ resource "aws_instance" "master" {
     delete_on_termination = true
   }
 
+  # Dedicated 2GB EBS for etcd — isolates etcd I/O from image pulls
+  ebs_block_device {
+    device_name           = "/dev/xvdf"
+    volume_size           = 2
+    volume_type           = "gp3"
+    delete_on_termination = true
+  }
+
   user_data = <<-EOF
               #!/bin/bash
               set -ex
@@ -51,12 +59,60 @@ resource "aws_instance" "master" {
 
               chmod +x /root/common-runtime.sh /root/master-runtime.sh
 
+              # --- Mount dedicated etcd EBS volume ---
+              echo "Mounting dedicated etcd EBS volume..."
+              # AWS Nitro exposes EBS as NVMe; find the device mapped to xvdf
+              ETCD_DEV=""
+              for i in $(seq 1 30); do
+                for dev in /dev/nvme*n1; do
+                  SERIAL=$(sudo nvme id-ctrl "$dev" 2>/dev/null | grep -i sn | awk -F':' '{print $2}' | xargs || true)
+                  # AWS maps xvdf -> serial contains "xvdf" or volume attachment name
+                  LINK=$(readlink -f /dev/disk/by-id/*xvdf* 2>/dev/null || true)
+                  if [ -n "$LINK" ]; then
+                    ETCD_DEV="$LINK"
+                    break 2
+                  fi
+                  # Fallback: check lsblk for 2G unformatted disk
+                  SIZE=$(lsblk -bdno SIZE "$dev" 2>/dev/null || echo 0)
+                  MODEL=$(sudo nvme id-ctrl "$dev" 2>/dev/null | grep -i mn | awk -F':' '{print $2}' | xargs || true)
+                  # EBS volumes show as "Amazon Elastic Block Store"
+                  if [[ "$MODEL" == *"Elastic Block"* ]] && [ "$SIZE" -le 3000000000 ] && [ "$SIZE" -gt 1000000000 ]; then
+                    MOUNT_CHECK=$(mount | grep -c "$dev" || true)
+                    if [ "$MOUNT_CHECK" -eq 0 ]; then
+                      ETCD_DEV="$dev"
+                      break 2
+                    fi
+                  fi
+                done
+                echo "Waiting for etcd EBS device... attempt $i"
+                sleep 2
+              done
+
+              if [ -n "$ETCD_DEV" ]; then
+                echo "Found etcd EBS device: $ETCD_DEV"
+                # Format as ext4 if not already formatted
+                FSTYPE=$(lsblk -no FSTYPE "$ETCD_DEV" 2>/dev/null || true)
+                if [ -z "$FSTYPE" ]; then
+                  sudo mkfs.ext4 -F "$ETCD_DEV"
+                fi
+                sudo mkdir -p /var/lib/etcd
+                sudo mount -o noatime "$ETCD_DEV" /var/lib/etcd
+                echo "$ETCD_DEV /var/lib/etcd ext4 defaults,noatime 0 0" >> /etc/fstab
+                sudo chmod 0700 /var/lib/etcd
+                echo "etcd EBS mounted at /var/lib/etcd"
+              else
+                echo "WARNING: etcd EBS device not found, falling back to root volume"
+                sudo mkdir -p /var/lib/etcd
+                sudo chmod 0700 /var/lib/etcd
+              fi
+
               # Run common-runtime.sh
               /root/common-runtime.sh
 
               # Modify master-runtime.sh
               sed -i 's/PUBLIC_IP_ACCESS="false"/PUBLIC_IP_ACCESS="true"/' /root/master-runtime.sh
-              sed -i 's/sudo kubeadm init /sudo kubeadm init --token "${local.kubeadm_token}" /' /root/master-runtime.sh
+              # Inject bootstrap token into kubeadm config
+              sed -i 's/__BOOTSTRAP_TOKEN__/${local.kubeadm_token}/' /root/master-runtime.sh
 
               # Run master-runtime.sh
               /root/master-runtime.sh

@@ -7,7 +7,7 @@ echo "---------------------------------------------------"
 echo "Phase 1: Provisioning Infrastructure with Terraform"
 echo "---------------------------------------------------"
 terraform init
-terraform apply -var-file=dev.tfvars
+terraform apply -var-file=dev.tfvars --auto-approve
 # terraform apply -auto-approve
 
 echo "---------------------------------------------------"

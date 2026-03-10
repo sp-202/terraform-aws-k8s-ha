@@ -28,7 +28,7 @@ sudo ip route replace local $local_ip dev $local_dev table local proto kernel sc
 
 # Write the local IP address to the kubelet default configuration file
 cat > /etc/default/kubelet << EOF
-KUBELET_EXTRA_ARGS=--node-ip=$local_ip
+KUBELET_EXTRA_ARGS=--node-ip=$local_ip --system-reserved=cpu=500m,memory=512Mi --kube-reserved=cpu=500m,memory=512Mi
 EOF
 
 # 2. NVMe Mount Optimization (The "IOPS" Boost)

@@ -28,6 +28,14 @@ This document tracks the critical technical hurdles encountered during the evolu
 **Issue**: Pods requiring persistent storage remained in `Pending` because no `StorageClass` was present or the default was not set correctly.
 **Resolution**: Integrated `openebs` installation into the `master-runtime.sh` script with the `localprovisioner` enabled. This provides a `openebs-hostpath` storage class that utilizes the high-performance local NVMe storage we configured.
 
-## 6. Control Plane Deadlock (Cilium AWS ENI IPAM)
+## 6. Etcd I/O Starvation During First-Time Bootstrap
+**Issue**: On first-time cluster deployment, applying CRDs and the full K8s stack simultaneously triggers massive Docker image pulls that saturate the root EBS volume's I/O bandwidth. Since etcd shared the same root disk, its WAL writes and snapshot operations were starved, causing etcd to hang and the entire control plane to become unresponsive.
+**Resolution**: Multi-pronged fix:
+- **Dedicated EBS for etcd**: Added a 2GB gp3 EBS volume (`/dev/xvdf`) mounted at `/var/lib/etcd`, physically isolating etcd I/O from image pulls and other root disk activity.
+- **Etcd tuning**: Configured cloud-friendly heartbeat interval (500ms), election timeout (5s), auto-compaction (1h), and reduced snapshot frequency (`snapshot-count: 5000`) via kubeadm `ClusterConfiguration` to reduce etcd's own I/O pressure.
+- **Kubelet resource reservations**: Added `system-reserved=cpu=500m,memory=512Mi` and `kube-reserved=cpu=500m,memory=512Mi` to prevent pods from starving system daemons.
+- **Serialized Helm installs**: Added 30s sleep between NTH and OpenEBS Helm chart installations to avoid concurrent image pull I/O storms.
+
+## 7. Control Plane Deadlock (Cilium AWS ENI IPAM)
 **Issue**: Cilium AWS ENI IPAM assigned secondary IPs to the primary master ENI (e.g., `ens5`). The Linux kernel arbitrarily chose a secondary pod IP (e.g., `10.0.1.109`) as the source IP for local traffic to the master's primary IP (`10.0.1.188`). Traffic from the pod IP hit Cilium's policy routing tables and was dropped, effectively blackholing `localhost -> 10.0.1.188` traffic. This caused `etcd` to time out and the Kubernetes API server to crash-loop.
 **Resolution**: Forced the local routing table to use the primary IP as the source. Appended a permanent `ip route replace local <primary-ip> dev <device> table local proto kernel scope host src <primary-ip>` rule to the `common-runtime.sh` boot script so all traffic inherently uses the correct source IP before Cilium is ever installed.
