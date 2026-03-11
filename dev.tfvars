@@ -5,17 +5,17 @@ cluster_name = "k8s-dev-cluster"
 master_instance_type = "c7g.2xlarge"
 
 # GP workers
-gp_worker_instance_type = "c6gd.2xlarge"
+gp_worker_instance_type = "c6g.2xlarge"
 
 # Spark critical
-spark_critical_instance_type = "c6gd.4xlarge"
+spark_critical_instance_type = "c6g.4xlarge"
 
 # MinIO
 minio_instance_type = "is4gen.xlarge"
 
 # Spot fleet - smaller 4xlarge instances
-worker_instance_type = "c6gd.4xlarge"
-spot_overrides       = ["c6gd.4xlarge", "m6gd.4xlarge", "c7gd.4xlarge", "c8gd.4xlarge"]
+worker_instance_type = "c6g.4xlarge"
+spot_overrides       = ["c6g.4xlarge", "c6gd.4xlarge", "m6g.4xlarge", "m6gd.4xlarge", "c7g.4xlarge", "c7gd.4xlarge", "m7g.4xlarge", "r6g.4xlarge"]
 worker_count         = 1
 worker_min           = 1
 worker_max           = 2

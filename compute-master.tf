@@ -66,12 +66,7 @@ resource "aws_instance" "master" {
               for i in $(seq 1 30); do
                 for dev in /dev/nvme*n1; do
                   SERIAL=$(sudo nvme id-ctrl "$dev" 2>/dev/null | grep -i sn | awk -F':' '{print $2}' | xargs || true)
-                  # AWS maps xvdf -> serial contains "xvdf" or volume attachment name
-                  LINK=$(readlink -f /dev/disk/by-id/*xvdf* 2>/dev/null || true)
-                  if [ -n "$LINK" ]; then
-                    ETCD_DEV="$LINK"
-                    break 2
-                  fi
+
                   # Fallback: check lsblk for 2G unformatted disk
                   SIZE=$(lsblk -bdno SIZE "$dev" 2>/dev/null || echo 0)
                   MODEL=$(sudo nvme id-ctrl "$dev" 2>/dev/null | grep -i mn | awk -F':' '{print $2}' | xargs || true)

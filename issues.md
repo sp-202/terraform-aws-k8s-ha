@@ -39,3 +39,18 @@ This document tracks the critical technical hurdles encountered during the evolu
 ## 7. Control Plane Deadlock (Cilium AWS ENI IPAM)
 **Issue**: Cilium AWS ENI IPAM assigned secondary IPs to the primary master ENI (e.g., `ens5`). The Linux kernel arbitrarily chose a secondary pod IP (e.g., `10.0.1.109`) as the source IP for local traffic to the master's primary IP (`10.0.1.188`). Traffic from the pod IP hit Cilium's policy routing tables and was dropped, effectively blackholing `localhost -> 10.0.1.188` traffic. This caused `etcd` to time out and the Kubernetes API server to crash-loop.
 **Resolution**: Forced the local routing table to use the primary IP as the source. Appended a permanent `ip route replace local <primary-ip> dev <device> table local proto kernel scope host src <primary-ip>` rule to the `common-runtime.sh` boot script so all traffic inherently uses the correct source IP before Cilium is ever installed.
+
+## 8. AWS Spot Fleet UnfulfillableCapacity Errors
+**Issue**: Spot instances in the `k8s-dev-cluster-workers-asg` Auto Scaling Group were failing to launch with `UnfulfillableCapacity` errors. This happens when the specified availability zone (`us-east-1a`) runs out of spot capacity for the requested instance types (e.g., `c6gd.4xlarge`).
+**Resolution**: Broadened the `spot_overrides` configuration in `dev.tfvars` to include a wider range of equivalent 4xlarge instances across different Graviton generations (`c6g`, `m6g`, `c7g`, `m7g`, `r6g`), significantly increasing the pool of available spot capacity. The general-purpose and spark-critical nodes were also adjusted to non-NVMe instance types (`c6g.2xlarge` and `c6g.4xlarge`) to mitigate potential constraints when scaling them.
+
+## 9. Kubeadm Init Hangs on NVMe EBS Mapping and v1beta4 Config
+**Issue**: The control plane node was failing to initialize and hanging near the end of cloud-init execution.
+**Root Causes**: 
+1. **NVMe Symlink Bug**: The `user_data` script attempted to find the dedicated etcd EBS volume by reading symlinks in `/dev/disk/by-id/*xvdf*`. However, AWS Nitro no longer maps the EBS device name (`/dev/xvdf`) to a predictable symlink on newer AMIs, causing `readlink` to fail or match literal wildcards, breaking the etcd mount logic.
+2. **Kubeadm v1beta4 Syntax**: Kubeadm `v1beta4` requires the `LocalEtcd.etcd.local.extraArgs` configuration to be an array of `name`/`value` dictionaries rather than a flat key-value map.
+3. **Preflight Checks**: Since the etcd dir was formatted and mounted explicitly *before* `kubeadm init`, kubeadm failed its preflight check (`DirAvailable--var-lib-etcd` because the dir was not empty).
+**Resolution**:
+- Removed the problematic `readlink` logic and relied solely on the robust fallback size-and-mount checking algorithm to identify the 2GB etcd volume.
+- Migrated the `extraArgs` syntax in `master-runtime.sh` to the required array format for `v1beta4`.
+- Added `DirAvailable--var-lib-etcd` to the `ignorePreflightErrors` list in the Kubeadm configuration.

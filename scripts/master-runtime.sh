@@ -44,11 +44,16 @@ etcd:
   local:
     dataDir: /var/lib/etcd
     extraArgs:
-      heartbeat-interval: "500"
-      election-timeout: "5000"
-      quota-backend-bytes: "2147483648"
-      auto-compaction-retention: "1"
-      snapshot-count: "5000"
+      - name: heartbeat-interval
+        value: "500"
+      - name: election-timeout
+        value: "5000"
+      - name: quota-backend-bytes
+        value: "2147483648"
+      - name: auto-compaction-retention
+        value: "1"
+      - name: snapshot-count
+        value: "5000"
 ---
 apiVersion: kubeadm.k8s.io/v1beta4
 kind: InitConfiguration
@@ -58,6 +63,7 @@ nodeRegistration:
   name: "$NODENAME"
   ignorePreflightErrors:
     - Swap
+    - DirAvailable--var-lib-etcd
 bootstrapTokens:
   - token: "__BOOTSTRAP_TOKEN__"
 KUBEADM_EOF
