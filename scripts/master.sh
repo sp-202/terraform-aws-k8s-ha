@@ -60,7 +60,7 @@ kubectl -n kube-system delete daemonset kube-proxy 2>/dev/null || true
 kubectl -n kube-system delete configmap kube-proxy 2>/dev/null || true
 
 cilium install \
-  --version 1.19.1 \
+  --version 1.18.6 \
   --set ipam.mode=eni \
   --set eni.enabled=true \
   --set routingMode=native \

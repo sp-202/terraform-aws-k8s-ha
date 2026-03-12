@@ -54,7 +54,9 @@ DRIVE_COUNT=${#NVME_DRIVES[@]}
 echo "Found $DRIVE_COUNT unmounted instance store NVMe drive(s)."
 
 if [ "$DRIVE_COUNT" -eq 0 ]; then
-    echo "No instance store NVMe drives found. Skipping NVMe setup."
+    echo "No instance store NVMe drives found. Creating placeholder /mnt/spark-nvme on root..."
+    sudo mkdir -p /mnt/spark-nvme
+    sudo chmod 777 /mnt/spark-nvme
 
 elif [ "$DRIVE_COUNT" -eq 1 ]; then
     # Single drive — format directly as XFS

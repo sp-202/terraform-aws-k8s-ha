@@ -53,4 +53,11 @@ This document tracks the critical technical hurdles encountered during the evolu
 **Resolution**:
 - Removed the problematic `readlink` logic and relied solely on the robust fallback size-and-mount checking algorithm to identify the 2GB etcd volume.
 - Migrated the `extraArgs` syntax in `master-runtime.sh` to the required array format for `v1beta4`.
-- Added `DirAvailable--var-lib-etcd` to the `ignorePreflightErrors` list in the Kubeadm configuration.
+## 10. Control Plane Instability & BPF Verifier Crash (ARM64)
+**Issue**: Even with a dedicated etcd EBS volume, the API server became unresponsive, with etcd rejecting connections (`TLS handshake failed: EOF`) and `kubectl` commands timing out.
+**Root Cause**: A critical kernel-level **BPF verifier bug** (`REG INVARIANTS VIOLATION`) was triggered on the master node (c7g / ARM64). This crash occurred when Cilium attempted to load eBPF programs into the kernel. The resulting kernel instability corrupted the networking stack, causing local loopback communication to `etcd` (127.0.0.1:2379) to fail or be blocked.
+**Resolution**:
+- **Webhook Removal**: Temporarily deleted the `spark-operator` and `kube-prometheus-stack` admission webhooks to prevent they from blocking API server startup during the network instability.
+- **Service Suspension**: Stopped the `cilium-agent` container on the master node to stop further BPF load attempts that were crashing the kernel.
+- **Master Reboot**: Rebooted the master node to clear the corrupted kernel/BPF state and restore stable networking for core control plane services (etcd, apiserver).
+- **Stable Version**: Downgrading Cilium to a more stable version (`v1.18.6`) for the ARM64 environment and monitoring for kernel-level stability.
