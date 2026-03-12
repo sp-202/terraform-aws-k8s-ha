@@ -61,3 +61,18 @@ This document tracks the critical technical hurdles encountered during the evolu
 - **Service Suspension**: Stopped the `cilium-agent` container on the master node to stop further BPF load attempts that were crashing the kernel.
 - **Master Reboot**: Rebooted the master node to clear the corrupted kernel/BPF state and restore stable networking for core control plane services (etcd, apiserver).
 - **Stable Version**: Downgrading Cilium to a more stable version (`v1.18.6`) for the ARM64 environment and monitoring for kernel-level stability.
+
+## 11. Persistent BPF Compilation Failures (ARM64)
+**Issue**: Even with a stable Cilium version (`v1.18.6`), the Cilium agent on ARM64 nodes consistently fails to compile BPF programs for pods.
+**Root Cause**: The error `failed to compile template program: Failed to compile bpf_lxc.o: exit status 1` indicates that the BPF compilation toolchain (clang/llc) inside the Cilium container is hitting an architectural or kernel-header mismatch. This prevents pods from reaching each other or the API server, leading to probe timeouts (`context deadline exceeded`).
+**Resolution**: Currently investigating a further Cilium version shift or manually injecting compatible kernel-headers.
+
+## 12. Network Interface Proliferation (Host ENI Leak)
+**Issue**: A second network interface (`ens6`) unexpectedly appears on the master node, sharing the same subnet (`10.0.1.0/24`) as the primary interface (`ens5`).
+**Root Cause**: This creates a dual-default-route scenario. When services try to connect via the private IP `10.0.1.61`, the kernel often attempts to route responses through the secondary interface, leading to asymmetric routing and connection timeouts. This is likely due to the `aws-node-termination-handler` or another AWS-integrated component misidentifying the node's network needs and attaching a second ENI.
+**Resolution**: Restored connectivity by manually disabling `ens6` and clearing Cilium's persistent BPF maps to force standard kernel routing.
+
+## 13. Stale Ingress Domain Propagation (Kustomize Vars)
+**Issue**: Re-applying manifests does not update Ingress hostnames (e.g., `airflow.44.203.26.241.sslip.io`). They remain stuck on the old master IP despite updates to `global-config.env`.
+**Root Cause**: Kustomize `vars` substitution for `INGRESS_DOMAIN` is failing because the `global-config` ConfigMap is generated with a hash suffix (e.g., `global-config-htckf6b7bm`), but the `vars` definition in the root `kustomization.yaml` references the base name. Additionally, the substitution may not be reaching nested `04-configs/ingress.yaml` correctly.
+**Resolution**: Plan to use Kustomize `replacements` (the non-deprecated alternative to `vars`) and ensure the ConfigMap hash is correctly handled or disabled for configuration constants.
