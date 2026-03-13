@@ -1,16 +1,17 @@
 #!/bin/bash
 # Common setup for Golden AMI — Generic ARM64, instance-type agnostic
 set -euxo pipefail
+export DEBIAN_FRONTEND=noninteractive
 
 # ============================================================
 # PINNED VERSIONS — update these intentionally, never auto-pull
 # ============================================================
 KUBERNETES_VERSION="${KUBERNETES_VERSION:-v1.34}"
 KUBERNETES_INSTALL_VERSION="1.34.4-1.1"
-CRICTL_VERSION="v1.34.0"          # match k8s version
-CILIUM_CLI_VERSION="v0.18.3"      # pinned — compatible with Cilium 1.16.5
-HELM_VERSION="v3.16.4"            # pinned stable
-KERNEL_VERSION="6.8.0-1021-aws"   # pinned — validated with Cilium 1.16.5 on ARM64
+CRICTL_VERSION="v1.34.0"        # match k8s version
+CILIUM_CLI_VERSION="v0.18.3"    # pinned — compatible with Cilium 1.16.5
+HELM_VERSION="v3.16.4"          # pinned stable
+KERNEL_VERSION="6.8.0-1021-aws" # pinned — validated with Cilium 1.16.5 on ARM64
 
 # ============================================================
 # 1. Pin Kernel Version — prevents auto-upgrade to untested kernels
@@ -27,6 +28,11 @@ if [[ "$CURRENT_KERNEL" != "$KERNEL_VERSION" ]]; then
         linux-modules-extra-${KERNEL_VERSION} || true
 fi
 
+# Set pinned kernel as default in GRUB
+sudo sed -i 's/^GRUB_DEFAULT=.*/GRUB_DEFAULT="Advanced options for Ubuntu>Ubuntu, with Linux '"$KERNEL_VERSION"'"/' \
+    /etc/default/grub || true
+sudo update-grub 2>/dev/null || true
+
 # Hold kernel packages — prevents unattended-upgrades from pulling new kernels
 sudo apt-mark hold \
     linux-aws \
@@ -34,7 +40,7 @@ sudo apt-mark hold \
     linux-headers-aws \
     linux-modules-extra-aws || true
 
-# Remove unattended-upgrades to prevent kernel drift in prod
+# Remove unattended-upgrades to prevent kernel drift
 sudo apt-get remove -y unattended-upgrades || true
 sudo apt-get autoremove -y || true
 
@@ -51,7 +57,6 @@ sudo apt-get install -y \
     unzip \
     nvme-cli \
     mdadm \
-    ebsnvme-id \
     iproute2 \
     net-tools \
     ethtool \
@@ -138,11 +143,18 @@ echo "Installing containerd $CONTAINERD_VERSION..."
 sudo apt-get install -y containerd.io="$CONTAINERD_VERSION"
 sudo apt-mark hold containerd.io
 
-# Containerd config — enable SystemdCgroup and set sandbox image
+# Containerd config — enable SystemdCgroup and set correct sandbox image
 sudo containerd config default | sudo tee /etc/containerd/config.toml
-sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml
+
+# Enable SystemdCgroup for proper cgroup v2 support
+sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' \
+    /etc/containerd/config.toml
 
 # Set correct pause image for k8s 1.34
+# Note: containerd 2.x uses 'pinned_images' block, not sandbox_image at top level
+sudo sed -i 's|sandbox = "registry.k8s.io/pause:.*"|sandbox = "registry.k8s.io/pause:3.10"|g' \
+    /etc/containerd/config.toml
+# Fallback for older config format
 sudo sed -i 's|sandbox_image = ".*"|sandbox_image = "registry.k8s.io/pause:3.10"|g' \
     /etc/containerd/config.toml
 
@@ -168,7 +180,7 @@ sudo apt-mark hold kubelet kubeadm kubectl
 
 # Placeholder kubelet config — overwritten at boot by common-runtime.sh
 # Prevents kubelet starting with wrong node-ip before runtime script runs
-cat > /etc/default/kubelet << 'EOF'
+cat | sudo tee /etc/default/kubelet << 'EOF'
 # Populated at boot by common-runtime.sh
 KUBELET_EXTRA_ARGS=--node-ip=127.0.0.1
 EOF
@@ -189,7 +201,8 @@ case "$ARCH" in
 esac
 
 echo "Installing crictl $CRICTL_VERSION..."
-curl -fsSL "https://github.com/kubernetes-sigs/cri-tools/releases/download/${CRICTL_VERSION}/crictl-${CRICTL_VERSION}-linux-${CRICTL_ARCH}.tar.gz" \
+curl -fsSL \
+    "https://github.com/kubernetes-sigs/cri-tools/releases/download/${CRICTL_VERSION}/crictl-${CRICTL_VERSION}-linux-${CRICTL_ARCH}.tar.gz" \
     -o crictl.tar.gz
 sudo tar zxvf crictl.tar.gz -C /usr/local/bin
 rm -f crictl.tar.gz
@@ -208,21 +221,22 @@ echo "Installing Cilium CLI $CILIUM_CLI_VERSION..."
 CLI_ARCH="amd64"
 if [ "$(uname -m)" = "aarch64" ]; then CLI_ARCH="arm64"; fi
 
+# Download with ORIGINAL filename — sha256sum manifest references exact filename
 curl -fsSL \
     "https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-linux-${CLI_ARCH}.tar.gz" \
-    -o cilium-cli.tar.gz
+    -o "cilium-linux-${CLI_ARCH}.tar.gz"
 curl -fsSL \
     "https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-linux-${CLI_ARCH}.tar.gz.sha256sum" \
-    -o cilium-cli.tar.gz.sha256sum
+    -o "cilium-linux-${CLI_ARCH}.tar.gz.sha256sum"
 
-sha256sum --check cilium-cli.tar.gz.sha256sum
-sudo tar xzvfC cilium-cli.tar.gz /usr/local/bin
-rm -f cilium-cli.tar.gz cilium-cli.tar.gz.sha256sum
+sha256sum --check "cilium-linux-${CLI_ARCH}.tar.gz.sha256sum"
+sudo tar xzvfC "cilium-linux-${CLI_ARCH}.tar.gz" /usr/local/bin
+rm -f "cilium-linux-${CLI_ARCH}.tar.gz" "cilium-linux-${CLI_ARCH}.tar.gz.sha256sum"
 
 cilium version --client
 
 # ============================================================
-# 10. Helm 3 — pinned version
+# 10. Helm 3 — pinned version, direct binary download
 # ============================================================
 echo "Installing Helm $HELM_VERSION..."
 CLI_ARCH="amd64"
@@ -232,13 +246,14 @@ curl -fsSL \
     "https://get.helm.sh/helm-${HELM_VERSION}-linux-${CLI_ARCH}.tar.gz" \
     -o helm.tar.gz
 tar xzvf helm.tar.gz
-sudo mv linux-${CLI_ARCH}/helm /usr/local/bin/helm
-rm -rf helm.tar.gz linux-${CLI_ARCH}/
+sudo mv "linux-${CLI_ARCH}/helm" /usr/local/bin/helm
+rm -rf helm.tar.gz "linux-${CLI_ARCH}/"
 
 helm version
 
 # ============================================================
 # 11. Verify all tools installed correctly
+# Fail fast here so bad AMI is never snapshotted
 # ============================================================
 echo "=== Verifying installations ==="
 kubelet --version
@@ -248,8 +263,7 @@ containerd --version
 crictl --version
 cilium version --client
 helm version
-nvme version
-ebsnvme-id --version || true
-aws --version 2>/dev/null || echo "AWS CLI not yet installed (installed separately)"
+nvme --version
+aws --version 2>/dev/null || echo "AWS CLI — installed separately in Packer"
 
 echo "=== common-ami.sh complete ==="
