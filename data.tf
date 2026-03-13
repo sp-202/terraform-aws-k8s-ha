@@ -24,7 +24,7 @@ data "aws_ami" "golden" {
 
   filter {
     name   = "name"
-    values = ["k8s-ubuntu-2404-arm64-golden-v1-*"]
+    values = ["k8s-ubuntu-2404-arm64-golden-v2-*"]
   }
 
   filter {
