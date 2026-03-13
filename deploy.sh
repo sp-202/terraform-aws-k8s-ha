@@ -7,8 +7,49 @@ echo "---------------------------------------------------"
 echo "Phase 1: Provisioning Infrastructure with Terraform"
 echo "---------------------------------------------------"
 terraform init
-terraform apply -var-file=dev.tfvars --auto-approve
-# terraform apply -auto-approve
+
+PS3="Select action: "
+actions=("deploy-dev" "deploy-prod" "destroy-dev" "destroy-prod" "quit")
+
+select ACTION in "${actions[@]}"; do
+  case $ACTION in
+    deploy-dev)
+      echo "Deploying to dev environment..."
+      terraform apply -var-file="dev.tfvars" --auto-approve
+      break
+      ;;
+    deploy-prod)
+      echo "⚠️  Deploying to PROD environment..."
+      read -p "Are you sure? (yes/no): " confirm
+      [[ "$confirm" == "yes" ]] || { echo "Aborted."; exit 1; }
+      terraform apply -var-file="prod.tfvars" --auto-approve
+      break
+      ;;
+    destroy-dev)
+      echo "⚠️  Destroying dev environment..."
+      read -p "Are you sure? (yes/no): " confirm
+      [[ "$confirm" == "yes" ]] || { echo "Aborted."; exit 1; }
+      terraform destroy -var-file="dev.tfvars" --auto-approve
+      exit 0
+      break
+      ;;
+    destroy-prod)
+      echo "🚨 Destroying PROD environment — this is irreversible!"
+      read -p "Type 'destroy-prod' to confirm: " confirm
+      [[ "$confirm" == "destroy-prod" ]] || { echo "Aborted."; exit 1; }
+      terraform destroy -var-file="prod.tfvars" --auto-approve
+      exit 0
+      break
+      ;;
+    quit)
+      echo "Exiting."
+      exit 0
+      ;;
+    *)
+      echo "Invalid option. Try again."
+      ;;
+  esac
+done
 
 echo "---------------------------------------------------"
 echo "Phase 2: Verifying Cluster and Fetching Kubeconfig"
