@@ -15,7 +15,7 @@ minio_instance_type = "is4gen.xlarge"
 
 # Spot fleet - smaller 4xlarge instances
 worker_instance_type = "c6g.4xlarge"
-spot_overrides       = ["c6g.4xlarge", "c6gd.4xlarge", "m6g.4xlarge", "m6gd.4xlarge", "c7g.4xlarge", "c7gd.4xlarge", "m7g.4xlarge", "r6g.4xlarge"]
+spot_overrides       = ["c6gd.4xlarge", "m6gd.4xlarge", "c7gd.4xlarge"]
 worker_count         = 1
 worker_min           = 1
 worker_max           = 2
