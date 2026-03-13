@@ -79,30 +79,41 @@ sudo cp /etc/kubernetes/admin.conf "$USER_HOME"/.kube/config
 sudo chown "$USER_ID":"$GROUP_ID" "$USER_HOME"/.kube/config
 export KUBECONFIG=/etc/kubernetes/admin.conf
 
-# Remove kube-proxy if it got installed anyway
-kubectl -n kube-system delete daemonset kube-proxy 2>/dev/null || true
-kubectl -n kube-system delete configmap kube-proxy 2>/dev/null || true
+# # Remove kube-proxy if it got installed anyway
+# kubectl -n kube-system delete daemonset kube-proxy 2>/dev/null || true
+# kubectl -n kube-system delete configmap kube-proxy 2>/dev/null || true
 
 # Fix environment for Cilium CLI under cloud-init
 export HOME=/root
 
 # Install Cilium
 cilium install \
-  --version 1.18.6 \
+  --version 1.16.5 \
   --set ipam.mode=eni \
   --set eni.enabled=true \
   --set routingMode=native \
   --set ipv4NativeRoutingCIDR="10.0.0.0/8" \
-  --set kubeProxyReplacement=true \
+  --set kubeProxyReplacement=false \
   --set nodePort.enabled=true \
   --set hubble.relay.enabled=true \
   --set hubble.ui.enabled=true \
   --set eni.awsEnableInstanceTypeDetails=true \
-  --set 'eni.nodeSpec.subnetTags[0]=cilium-pod-subnet=1'
+  --set eni.updateEC2AdapterLimitViaAPI=true \
+  --set 'eni.subnetTags.cilium-pod-subnet=1' \
+  --set bpf.preallocateMaps=false
 
 echo "Waiting for Cilium to initialize..."
-sleep 20
-cilium status --wait || true
+sleep 30
+
+if cilium status --wait --timeout=180s; then
+  echo "Cilium healthy — removing kube-proxy"
+  kubectl -n kube-system delete daemonset kube-proxy 2>/dev/null || true
+  kubectl -n kube-system delete configmap kube-proxy 2>/dev/null || true
+else
+  echo "ERROR: Cilium not healthy after 180s — aborting"
+  cilium status  # dump status to log for debugging
+  exit 1
+fi
 
 # Install AWS Node Termination Handler
 echo "Installing AWS Node Termination Handler..."

@@ -112,9 +112,10 @@ resource "aws_instance" "master" {
               # Run master-runtime.sh
               /root/master-runtime.sh
 
-              # Untaint master to allow scheduling pods
+              # Exclude master from Cilium ENI IP pre-warming to prevent ens6 ENI leak
               export KUBECONFIG=/etc/kubernetes/admin.conf
-              kubectl taint nodes --all node-role.kubernetes.io/control-plane:NoSchedule- || true
+              kubectl annotate node $(hostname -s) \
+                "io.cilium.aws/exclude-from-eni-allocation=true" || true
 
               # Copy config for ubuntu user
               mkdir -p /home/ubuntu/.kube
