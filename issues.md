@@ -53,26 +53,61 @@ This document tracks the critical technical hurdles encountered during the evolu
 **Resolution**:
 - Removed the problematic `readlink` logic and relied solely on the robust fallback size-and-mount checking algorithm to identify the 2GB etcd volume.
 - Migrated the `extraArgs` syntax in `master-runtime.sh` to the required array format for `v1beta4`.
-## 10. Control Plane Instability & BPF Verifier Crash (ARM64)
-**Issue**: Even with a dedicated etcd EBS volume, the API server became unresponsive, with etcd rejecting connections (`TLS handshake failed: EOF`) and `kubectl` commands timing out.
-**Root Cause**: A critical kernel-level **BPF verifier bug** (`REG INVARIANTS VIOLATION`) was triggered on the master node (c7g / ARM64). This crash occurred when Cilium attempted to load eBPF programs into the kernel. The resulting kernel instability corrupted the networking stack, causing local loopback communication to `etcd` (127.0.0.1:2379) to fail or be blocked.
-**Resolution**:
-- **Webhook Removal**: Temporarily deleted the `spark-operator` and `kube-prometheus-stack` admission webhooks to prevent they from blocking API server startup during the network instability.
-- **Service Suspension**: Stopped the `cilium-agent` container on the master node to stop further BPF load attempts that were crashing the kernel.
-- **Master Reboot**: Rebooted the master node to clear the corrupted kernel/BPF state and restore stable networking for core control plane services (etcd, apiserver).
-- **Stable Version**: Downgrading Cilium to a more stable version (`v1.18.6`) for the ARM64 environment and monitoring for kernel-level stability.
 
-## 11. Persistent BPF Compilation Failures (ARM64)
+## 10. Persistent BPF Compilation Failures (ARM64)
 **Issue**: Even with a stable Cilium version (`v1.18.6`), the Cilium agent on ARM64 nodes consistently fails to compile BPF programs for pods.
-**Root Cause**: The error `failed to compile template program: Failed to compile bpf_lxc.o: exit status 1` indicates that the BPF compilation toolchain (clang/llc) inside the Cilium container is hitting an architectural or kernel-header mismatch. This prevents pods from reaching each other or the API server, leading to probe timeouts (`context deadline exceeded`).
-**Resolution**: Currently investigating a further Cilium version shift or manually injecting compatible kernel-headers.
+**Root Cause**: The error `failed to compile template program: Failed to compile bpf_lxc.o: exit status 1` indicates that the BPF compilation toolchain (clang/llc) inside the Cilium container is hitting an architectural or kernel-header mismatch on kernel `6.17.0-1007-aws` (too new for Cilium 1.16.5 BPF on ARM64). Additionally, `kubeProxyReplacement=true` triggered a `REG INVARIANTS VIOLATION` BPF verifier crash on Graviton3 (c7g) instances.
+**Root Cause**: 
+- Cilium `v1.18.6` was too new and unstable on ARM64 Graviton
+- Kernel `6.17.0-1007-aws` (Ubuntu 24.04 default) incompatible with Cilium 1.16.5 BPF toolchain
+- `kubeProxyReplacement=true` caused BPF verifier crash on Graviton3
+**Resolution**: 
+- Downgraded Cilium to `v1.16.5` (stable ARM64 BPF toolchain)
+- Pinned kernel to `6.8.0-1021-aws` in Golden AMI via `apt-mark hold` and GRUB default override
+- Set `kubeProxyReplacement=false` to avoid BPF verifier crash
+- Removed unattended-upgrades to prevent kernel drift
+- New Golden AMI (`k8s-ubuntu-2404-arm64-golden-v2`) built and validated — all 5 nodes now running `6.8.0-1021-aws` with Cilium 5/5 healthy
 
-## 12. Network Interface Proliferation (Host ENI Leak)
-**Issue**: A second network interface (`ens6`) unexpectedly appears on the master node, sharing the same subnet (`10.0.1.0/24`) as the primary interface (`ens5`).
-**Root Cause**: This creates a dual-default-route scenario. When services try to connect via the private IP `10.0.1.61`, the kernel often attempts to route responses through the secondary interface, leading to asymmetric routing and connection timeouts. This is likely due to the `aws-node-termination-handler` or another AWS-integrated component misidentifying the node's network needs and attaching a second ENI.
-**Resolution**: Restored connectivity by manually disabling `ens6` and clearing Cilium's persistent BPF maps to force standard kernel routing.
+---
 
-## 13. Stale Ingress Domain Propagation (Kustomize Vars)
-**Issue**: Re-applying manifests does not update Ingress hostnames (e.g., `airflow.44.203.26.241.sslip.io`). They remain stuck on the old master IP despite updates to `global-config.env`.
-**Root Cause**: Kustomize `vars` substitution for `INGRESS_DOMAIN` is failing because the `global-config` ConfigMap is generated with a hash suffix (e.g., `global-config-htckf6b7bm`), but the `vars` definition in the root `kustomization.yaml` references the base name. Additionally, the substitution may not be reaching nested `04-configs/ingress.yaml` correctly.
-**Resolution**: Plan to use Kustomize `replacements` (the non-deprecated alternative to `vars`) and ensure the ConfigMap hash is correctly handled or disabled for configuration constants.
+## 11. Network Interface Proliferation (Host ENI Leak)
+**Issue**: A second network interface (`ens6`) unexpectedly appears on the master node, sharing the same subnet (`10.0.1.0/24`) as the primary interface (`ens5`). Additionally stale `CiliumNode` objects remained after instance termination.
+**Root Cause**: 
+- Master node was untainted (`kubectl taint nodes --all node-role.kubernetes.io/control-plane-`), allowing Cilium ENI IPAM to allocate a pod ENI on the master — this is the `ens6` leak
+- Cilium ENI mode allocates real AWS ENIs per node for pod IPs; without the exclusion annotation, master gets one too
+- Wrong Helm key `eni.nodeSpec.subnetTags[0]` prevented correct subnet tagging
+- kube-proxy deleted before Cilium was healthy caused a networking gap
+**Resolution**: 
+- Replaced `kubectl taint nodes --all` with master ENI exclusion annotation:
+```bash
+  kubectl annotate node <master> "io.cilium.aws/exclude-from-eni-allocation=true"
+```
+- Fixed Cilium install Helm key to `eni.subnetTags.cilium-pod-subnet=1`
+- Added `cilium status --wait --timeout=180s` gate before deleting kube-proxy
+- Added `bpf.preallocateMaps=false` and `eni.updateEC2AdapterLimitViaAPI=true`
+- Added `rp_filter=0` sysctl in Golden AMI for Cilium ENI native routing
+- Verified: CiliumNode count matches Node count exactly (diff returns empty), no leaked ENIs in AWS
+
+---
+
+## 12. Golden AMI Build Failures (Packer)
+**Issue**: Packer AMI build failing with `E: Unable to locate package ebsnvme-id` and `sha256sum: cilium-linux-arm64.tar.gz: No such file or directory`.
+**Root Cause**:
+- `ebsnvme-id` is an Amazon Linux package — does not exist in Ubuntu apt repos
+- Cilium CLI downloaded as `cilium-cli.tar.gz` but sha256sum manifest references original filename `cilium-linux-arm64.tar.gz` — name mismatch caused checksum failure
+- `DEBIAN_FRONTEND` not set causing debconf dialog warnings throughout build
+- GRUB not explicitly set to boot pinned kernel — newer kernel (`6.17.x`) would boot instead of pinned `6.8.0-1021-aws`
+**Resolution**:
+- Removed `ebsnvme-id` from apt install list (nvme-cli is the correct Ubuntu package)
+- Fixed Cilium download to use original filename matching sha256sum manifest:
+```bash
+  curl ... -o "cilium-linux-${CLI_ARCH}.tar.gz"
+  sha256sum --check "cilium-linux-${CLI_ARCH}.tar.gz.sha256sum"
+```
+- Added `export DEBIAN_FRONTEND=noninteractive` at top of `common-ami.sh`
+- Added GRUB default override to pin boot kernel:
+```bash
+  sudo sed -i 's/^GRUB_DEFAULT=.*/GRUB_DEFAULT="Advanced options..."/' /etc/default/grub
+  sudo update-grub
+```
+- AMI `k8s-ubuntu-2404-arm64-golden-v2` successfully built and validated
