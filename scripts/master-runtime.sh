@@ -4,9 +4,7 @@ set -euxo pipefail
 
 PUBLIC_IP_ACCESS="false"
 NODENAME=$(hostname -s)
-POD_CIDR="__POD_CIDR__"
 
-# Ensure etcd data dir exists with correct permissions
 sudo mkdir -p /var/lib/etcd
 sudo chmod 0700 /var/lib/etcd
 
@@ -30,12 +28,12 @@ else
     exit 1
 fi
 
-# Generate kubeadm config with etcd tuning for cloud environments
 cat > /tmp/kubeadm-config.yaml << KUBEADM_EOF
 apiVersion: kubeadm.k8s.io/v1beta4
 kind: ClusterConfiguration
 networking:
-  podSubnet: "$POD_CIDR"
+  podSubnet: "__POD_CIDR__"
+  serviceSubnet: "10.96.0.0/12"
 apiServer:
   certSANs:
 $(for san in $(echo $CERT_SANS | tr ',' ' '); do echo "    - $san"; done)
@@ -44,9 +42,9 @@ etcd:
     dataDir: /var/lib/etcd
     extraArgs:
       - name: heartbeat-interval
-        value: "500"
+        value: "250"
       - name: election-timeout
-        value: "5000"
+        value: "2500"
       - name: quota-backend-bytes
         value: "2147483648"
       - name: auto-compaction-retention
@@ -77,15 +75,11 @@ mkdir -p "$USER_HOME"/.kube
 sudo cp /etc/kubernetes/admin.conf "$USER_HOME"/.kube/config
 sudo chown "$USER_ID":"$GROUP_ID" "$USER_HOME"/.kube/config
 export KUBECONFIG=/etc/kubernetes/admin.conf
-
-# Fix environment for Cilium CLI under cloud-init
 export HOME=/root
 
-# Remove kube-proxy before cilium
 kubectl -n kube-system delete daemonset kube-proxy 2>/dev/null || true
 kubectl -n kube-system delete configmap kube-proxy 2>/dev/null || true
 
-# Install via Helm — cilium CLI doesn't reliably pass eni.subnetIDs to operator
 helm repo add cilium https://helm.cilium.io/
 helm repo update
 
@@ -95,7 +89,7 @@ helm install cilium cilium/cilium \
   --set ipam.mode=eni \
   --set eni.enabled=true \
   --set routingMode=native \
-  --set ipv4NativeRoutingCIDR="__POD_CIDR__" \
+  --set ipv4NativeRoutingCIDR="10.0.0.0/8" \
   --set kubeProxyReplacement=true \
   --set k8sServiceHost="$MASTER_PRIVATE_IP" \
   --set k8sServicePort=6443 \
@@ -104,14 +98,13 @@ helm install cilium cilium/cilium \
   --set hubble.ui.enabled=true \
   --set eni.awsEnableInstanceTypeDetails=true \
   --set eni.updateEC2AdapterLimitViaAPI=true \
+  --set eni.awsReleaseExcessIPs=true \
   --set eni.subnetIDsFilter[0]="__POD_SUBNET_ID__" \
   --set bpf.preallocateMaps=false
 
 echo "Waiting for Cilium to initialize..."
 sleep 30
 
-# Install AWS Node Termination Handler
-echo "Installing AWS Node Termination Handler..."
 helm repo add eks https://aws.github.io/eks-charts
 helm repo update
 helm upgrade --install aws-node-termination-handler \
@@ -120,19 +113,15 @@ helm upgrade --install aws-node-termination-handler \
   --set enableRebalanceMonitoring=true \
   eks/aws-node-termination-handler
 
-# Wait for I/O to settle before next install
 echo "Waiting for I/O to settle before OpenEBS install..."
 sleep 30
 
-# ------ OpenEBS Install ------
-echo "Installing OpenEBS..."
 helm repo add openebs https://openebs.github.io/charts
 helm repo update
 helm upgrade --install openebs openebs/openebs \
   --namespace openebs --create-namespace \
   --set localprovisioner.enabled=true
 
-# Start Node Auto-Labeling Daemon for ROLES
 cat << 'EOD' > /usr/local/bin/auto-label-nodes.sh
 #!/bin/bash
 export KUBECONFIG=/etc/kubernetes/admin.conf

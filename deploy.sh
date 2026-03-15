@@ -20,15 +20,15 @@ select ACTION in "${actions[@]}"; do
       ;;
     deploy-prod)
       echo "⚠️  Deploying to PROD environment..."
-      read -p "Are you sure? (yes/no): " confirm
-      [[ "$confirm" == "yes" ]] || { echo "Aborted."; exit 1; }
+      read -p "Are you sure? (y/n): " confirm
+      [[ "$confirm" == "y" ]] || { echo "Aborted."; exit 1; }
       terraform apply -var-file="prod.tfvars" --auto-approve
       break
       ;;
     destroy-dev)
       echo "⚠️  Destroying dev environment..."
-      read -p "Are you sure? (yes/no): " confirm
-      [[ "$confirm" == "yes" ]] || { echo "Aborted."; exit 1; }
+      read -p "Are you sure? (y/n): " confirm
+      [[ "$confirm" == "y" ]] || { echo "Aborted."; exit 1; }
       terraform destroy -var-file="dev.tfvars" --auto-approve
       exit 0
       break
