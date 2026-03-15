@@ -28,6 +28,12 @@ variable "private_subnet_cidr" {
   default     = "10.0.2.0/24"
 }
 
+variable "pod_subnet_cidr" {
+  description = "CIDR block for the pods in k8s"
+  type        = string
+  default     = "10.0.4.0/24"   # 512 IPs, separate from nodes
+}
+
 
 variable "ssh_public_key_path" {
   description = "Path to the SSH public key to be used for instances"
@@ -77,11 +83,11 @@ variable "worker_count" {
   default     = 3
 }
 
-variable "pod_cidr" {
-  description = "CIDR block for Kubernetes Pods (within VPC)"
-  type        = string
-  default     = "10.0.16.0/20"
-}
+# variable "pod_cidr" {
+#   description = "CIDR block for Kubernetes Pods (within VPC)"
+#   type        = string
+#   default     = "10.0.16.0/20"
+# }
 
 variable "cluster_name" {
   description = "Name of the Kubernetes cluster"

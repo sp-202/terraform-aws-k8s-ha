@@ -48,7 +48,7 @@ resource "aws_subnet" "private" {
 # Pod Subnet (within main VPC)
 resource "aws_subnet" "pods" {
   vpc_id            = aws_vpc.main.id
-  cidr_block        = var.pod_cidr
+  cidr_block        = var.pod_subnet_cidr
   availability_zone = var.availability_zone
 
   tags = {

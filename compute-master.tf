@@ -108,6 +108,8 @@ resource "aws_instance" "master" {
               sed -i 's/PUBLIC_IP_ACCESS="false"/PUBLIC_IP_ACCESS="true"/' /root/master-runtime.sh
               # Inject bootstrap token into kubeadm config
               sed -i 's/__BOOTSTRAP_TOKEN__/${local.kubeadm_token}/' /root/master-runtime.sh
+              sed -i 's|__POD_CIDR__|${var.pod_subnet_cidr}|g' /root/master-runtime.sh
+              sed -i 's|__POD_SUBNET_ID__|${aws_subnet.pods.id}|g' /root/master-runtime.sh
 
               # Run master-runtime.sh
               /root/master-runtime.sh

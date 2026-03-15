@@ -5,7 +5,7 @@ cluster_name = "k8s-dev-cluster"
 master_instance_type = "c7g.2xlarge"
 
 # GP workers
-gp_worker_instance_type = "c6gd.2xlarge"
+gp_worker_instance_type = "c6gd.4xlarge"
 
 # Spark critical
 spark_critical_instance_type = "c6gd.4xlarge"

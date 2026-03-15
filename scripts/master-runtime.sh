@@ -1,11 +1,10 @@
 #!/bin/bash
-# Setup for Control Plane (Master) servers - Runtime optimized - V2 (Forced Refresh)
 
 set -euxo pipefail
 
 PUBLIC_IP_ACCESS="false"
 NODENAME=$(hostname -s)
-POD_CIDR="10.0.0.0/8"
+POD_CIDR="__POD_CIDR__"
 
 # Ensure etcd data dir exists with correct permissions
 sudo mkdir -p /var/lib/etcd
@@ -79,42 +78,36 @@ sudo cp /etc/kubernetes/admin.conf "$USER_HOME"/.kube/config
 sudo chown "$USER_ID":"$GROUP_ID" "$USER_HOME"/.kube/config
 export KUBECONFIG=/etc/kubernetes/admin.conf
 
-# # Remove kube-proxy if it got installed anyway
-# kubectl -n kube-system delete daemonset kube-proxy 2>/dev/null || true
-# kubectl -n kube-system delete configmap kube-proxy 2>/dev/null || true
-
 # Fix environment for Cilium CLI under cloud-init
 export HOME=/root
 
-# Install Cilium
-cilium install \
+# Remove kube-proxy before cilium
+kubectl -n kube-system delete daemonset kube-proxy 2>/dev/null || true
+kubectl -n kube-system delete configmap kube-proxy 2>/dev/null || true
+
+# Install via Helm — cilium CLI doesn't reliably pass eni.subnetIDs to operator
+helm repo add cilium https://helm.cilium.io/
+helm repo update
+
+helm install cilium cilium/cilium \
   --version 1.16.5 \
+  --namespace kube-system \
   --set ipam.mode=eni \
   --set eni.enabled=true \
   --set routingMode=native \
-  --set ipv4NativeRoutingCIDR="10.0.0.0/8" \
-  --set kubeProxyReplacement=false \
-  --set nodePort.enabled=true \
+  --set ipv4NativeRoutingCIDR="__POD_CIDR__" \
+  --set kubeProxyReplacement=true \
+  --set k8sServiceHost="$MASTER_PRIVATE_IP" \
+  --set k8sServicePort=6443 \
   --set hubble.relay.enabled=true \
   --set hubble.ui.enabled=true \
   --set eni.awsEnableInstanceTypeDetails=true \
   --set eni.updateEC2AdapterLimitViaAPI=true \
-  --set 'eni.subnetTags.cilium-pod-subnet=1' \
+  --set eni.subnetIDsFilter[0]="__POD_SUBNET_ID__" \
   --set bpf.preallocateMaps=false
 
 echo "Waiting for Cilium to initialize..."
 sleep 30
-
-if cilium status --wait --wait-duration=120s; then
-  echo "Cilium healthy — removing kube-proxy"
-  kubectl -n kube-system delete daemonset kube-proxy 2>/dev/null || true
-  kubectl -n kube-system delete configmap kube-proxy 2>/dev/null || true
-else
-  echo "WARNING: Cilium not fully healthy after 120s — continuing anyway"
-  echo "Cilium will reach health eventually; kube-proxy cleanup deferred"
-  cilium status || true  # dump status to log for debugging (|| true prevents set -e abort)
-  # DO NOT exit here — let the rest of the setup (NTH, OpenEBS, auto-labeler) proceed
-fi
 
 # Install AWS Node Termination Handler
 echo "Installing AWS Node Termination Handler..."
