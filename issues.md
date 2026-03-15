@@ -111,3 +111,65 @@ This document tracks the critical technical hurdles encountered during the evolu
   sudo update-grub
 ```
 - AMI `k8s-ubuntu-2404-arm64-golden-v2` successfully built and validated
+
+## 13. Cilium ENI Mode Allocating Pod IPs from Node Subnet
+
+**Issue**: All pods receiving IPs from node subnets (`10.0.1.x`, `10.0.2.x`) instead of dedicated pod subnet (`10.0.4.x`). Control plane crashing with `kube-apiserver` CrashLoopBackOff, `etcd` gRPC handshake failures, and Traefik unable to reach `10.96.0.1:443`.
+
+**Root Cause**:
+- `POD_CIDR="10.0.0.0/8"` overlapped entire VPC including node IPs — Cilium eBPF intercepted loopback/node traffic causing `etcd` and `kube-apiserver` communication failure
+- `kubeProxyReplacement=false` with ENI mode is contradictory — neither Cilium nor kube-proxy fully owned service routing, making `10.96.0.1` unreachable
+- kube-proxy deleted **after** Cilium install instead of before — caused iptables/eBPF rule conflicts during the overlap window
+- `cilium install` CLI silently drops ENI operator flags — `--subnet-tags-filter` and `--subnet-ids-filter` showed empty in operator logs despite being passed
+- Wrong Helm key used: `eni.subnetIDs` maps to per-node `nodeSpec` config, NOT the global operator filter. Correct key is `eni.subnetIDsFilter`
+- Pod subnet CIDR mismatch: Terraform created `10.0.4.0/24` but script had `10.0.4.0/23`
+- Subnet ID hardcoded in script — breaks on every `terraform destroy` + `apply` cycle
+
+**Resolution**:
+- Fixed `POD_CIDR` to match dedicated pod subnet only:
+```bash
+POD_CIDR="__POD_CIDR__"   # injected dynamically by Terraform
+```
+- Switched to `kubeProxyReplacement=true` and added required apiserver flags:
+```bash
+--set kubeProxyReplacement=true \
+--set k8sServiceHost="$MASTER_PRIVATE_IP" \
+--set k8sServicePort=6443
+```
+- Moved kube-proxy deletion to **before** Cilium install:
+```bash
+kubectl -n kube-system delete daemonset kube-proxy 2>/dev/null || true
+kubectl -n kube-system delete configmap kube-proxy 2>/dev/null || true
+```
+- Switched from `cilium install` CLI to `helm install` for reliable ENI operator flag passing
+- Used correct global subnet filter key:
+```bash
+--set eni.subnetIDsFilter[0]="__POD_SUBNET_ID__"
+```
+- Added dynamic Terraform injection in `compute-master.tf` user_data:
+```bash
+sed -i 's|__POD_CIDR__|${var.pod_subnet_cidr}|g' /root/master-runtime.sh
+sed -i 's|__POD_SUBNET_ID__|${aws_subnet.pods.id}|g' /root/master-runtime.sh
+```
+- Also fixed EC2 `user_data` 16KB limit by moving scripts to S3 instead of base64-encoding inline
+- Pods now correctly receive IPs from `10.0.4.x` pod subnet ✅
+
+## 14. OpenEBS localpv-provisioner CrashLoopBackOff
+
+**Issue**: `openebs-localpv-provisioner` and `openebs-ndm-operator` crashing with:
+```
+failure in preupgrade tasks: failed to list localpv based pv(s):
+dial tcp 10.96.0.1:443: i/o timeout
+```
+
+**Root Cause**:
+- Helm chart version `3.10.0` pulling container image `3.5.0` — version mismatch causes pre-upgrade API call to fail
+- Pinning `--version` in helm install without also pinning image tags leads to inconsistent versions
+
+**Resolution**:
+- Removed version pin from `master-runtime.sh` helm install — let helm pull latest stable with consistent chart and image versions:
+```bash
+helm upgrade --install openebs openebs/openebs \
+  --namespace openebs --create-namespace \
+  --set localprovisioner.enabled=true
+```

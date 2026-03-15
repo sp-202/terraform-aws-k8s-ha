@@ -99,6 +99,7 @@ helm install cilium cilium/cilium \
   --set kubeProxyReplacement=true \
   --set k8sServiceHost="$MASTER_PRIVATE_IP" \
   --set k8sServicePort=6443 \
+  --set socketLB.hostNamespaceOnly=true \
   --set hubble.relay.enabled=true \
   --set hubble.ui.enabled=true \
   --set eni.awsEnableInstanceTypeDetails=true \
