@@ -116,11 +116,13 @@ helm upgrade --install aws-node-termination-handler \
 echo "Waiting for I/O to settle before OpenEBS install..."
 sleep 30
 
-helm repo add openebs https://openebs.github.io/charts
+helm repo add openebs https://openebs.github.io/openebs
 helm repo update
 helm upgrade --install openebs openebs/openebs \
   --namespace openebs --create-namespace \
-  --set localprovisioner.enabled=true
+  --set engines.replicated.mayastor.enabled=false \
+  --set engines.local.zfs.enabled=false \
+  --set engines.local.lvm.enabled=false
 
 cat << 'EOD' > /usr/local/bin/auto-label-nodes.sh
 #!/bin/bash
