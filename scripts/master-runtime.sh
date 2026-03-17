@@ -65,7 +65,7 @@ bootstrapTokens:
   - token: "__BOOTSTRAP_TOKEN__"
 KUBEADM_EOF
 
-sudo kubeadm init --config /tmp/kubeadm-config.yaml --skip-phase=addon/kube-proxy
+sudo kubeadm init --config /tmp/kubeadm-config.yaml --skip-phases=addon/kube-proxy
 
 USER_HOME="/home/ubuntu"
 USER_ID=$(id -u ubuntu)
