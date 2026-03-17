@@ -21,7 +21,7 @@ if [[ "$PUBLIC_IP_ACCESS" == "false" ]]; then
 elif [[ "$PUBLIC_IP_ACCESS" == "true" ]]; then
     MASTER_PRIVATE_IP=$(ip route get 8.8.8.8 | awk -F"src " 'NR==1{split($2,a," ");print a[1]}')
     MASTER_PUBLIC_IP=$(curl ifconfig.me && echo "")
-    ADVERTISE_ADDRESS="0.0.0.0"
+    ADVERTISE_ADDRESS="$MASTER_PRIVATE_IP"
     CERT_SANS="$MASTER_PUBLIC_IP,$MASTER_PRIVATE_IP,127.0.0.1,localhost"
 else
     echo "Error: PUBLIC_IP_ACCESS has an invalid value: $PUBLIC_IP_ACCESS"
@@ -46,7 +46,7 @@ etcd:
       - name: election-timeout
         value: "2500"
       - name: quota-backend-bytes
-        value: "2147483648"
+        value: "1073741824"
       - name: auto-compaction-retention
         value: "1"
       - name: snapshot-count
@@ -65,7 +65,7 @@ bootstrapTokens:
   - token: "__BOOTSTRAP_TOKEN__"
 KUBEADM_EOF
 
-sudo kubeadm init --config /tmp/kubeadm-config.yaml
+sudo kubeadm init --config /tmp/kubeadm-config.yaml --skip-phase=addon/kube-proxy
 
 USER_HOME="/home/ubuntu"
 USER_ID=$(id -u ubuntu)
@@ -79,6 +79,8 @@ export HOME=/root
 
 kubectl -n kube-system delete daemonset kube-proxy 2>/dev/null || true
 kubectl -n kube-system delete configmap kube-proxy 2>/dev/null || true
+kubectl delete clusterrolebinding kube-proxy 2>/dev/null || true
+kubectl delete serviceaccount kube-proxy -n kube-system 2>/dev/null || true
 
 helm repo add cilium https://helm.cilium.io/
 helm repo update
@@ -93,14 +95,14 @@ helm install cilium cilium/cilium \
   --set kubeProxyReplacement=true \
   --set k8sServiceHost="$MASTER_PRIVATE_IP" \
   --set k8sServicePort=6443 \
-  --set socketLB.hostNamespaceOnly=true \
+  --set socketLB.hostNamespaceOnly=false \
+  --set bpf.masquerade=true \
   --set hubble.relay.enabled=true \
   --set hubble.ui.enabled=true \
   --set eni.awsEnableInstanceTypeDetails=true \
   --set eni.updateEC2AdapterLimitViaAPI=true \
   --set eni.awsReleaseExcessIPs=true \
   --set eni.subnetIDsFilter[0]="__POD_SUBNET_ID__" \
-  --set bpf.preallocateMaps=false
 
 echo "Waiting for Cilium to initialize..."
 sleep 30

@@ -42,7 +42,7 @@ resource "aws_instance" "master" {
   # Dedicated 2GB EBS for etcd — isolates etcd I/O from image pulls
   ebs_block_device {
     device_name           = "/dev/xvdf"
-    volume_size           = 2
+    volume_size           = 10
     volume_type           = "gp3"
     delete_on_termination = true
   }
