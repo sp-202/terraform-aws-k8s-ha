@@ -173,3 +173,157 @@ helm upgrade --install openebs openebs/openebs \
   --namespace openebs --create-namespace \
   --set localprovisioner.enabled=true
 ```
+
+## 15. kubeadm init fails with "unknown flag: --skip-phase"
+
+**Issue**: `kubeadm init` fails immediately with:
+```
+error: unknown flag: --skip-phase
+```
+Cluster never initializes. No kubeconfig, no API server, no kubelet configuration. All subsequent commands in master-runtime.sh silently fail.
+
+**Root Cause**:
+- Kubernetes 1.34 kubeadm uses `--skip-phases` (plural), not `--skip-phase` (singular)
+- Single character difference causes total cluster failure with a non-obvious error message
+
+**Resolution**:
+- Changed `--skip-phase` to `--skip-phases` in `master-runtime.sh`:
+```bash
+sudo kubeadm init --config /tmp/kubeadm-config.yaml --skip-phases=addon/kube-proxy
+```
+
+---
+
+## 16. API Server advertises 0.0.0.0 — ClusterIP 10.96.0.1 unreachable
+
+**Issue**: Pods fail with:
+```
+dial tcp 10.96.0.1:443: i/o timeout
+```
+The `kubernetes` service endpoint resolves to `0.0.0.0:6443` instead of the master's real IP.
+
+**Root Cause**:
+- Terraform sets `PUBLIC_IP_ACCESS="true"` via sed, which made the script set `ADVERTISE_ADDRESS="0.0.0.0"`
+- API server advertised `0.0.0.0`, so the kubernetes ClusterIP service endpoint became `0.0.0.0:6443` — not routable from inside pods
+
+**Resolution**:
+- Changed `ADVERTISE_ADDRESS` from `"0.0.0.0"` to `"$MASTER_PRIVATE_IP"` in the `PUBLIC_IP_ACCESS == "true"` block. Public IP remains in `certSANs` for external access:
+```bash
+ADVERTISE_ADDRESS="$MASTER_PRIVATE_IP"
+CERT_SANS="$MASTER_PUBLIC_IP,$MASTER_PRIVATE_IP,127.0.0.1,localhost"
+```
+
+---
+
+## 17. Asymmetric routing — pods on workers cannot reach API server on master
+
+**Issue**: Pods on worker nodes timeout connecting to the API server via both ClusterIP (`10.96.0.1:443`) and direct IP (`10.0.1.x:6443`). Host-level `nc -nvz` works fine. Affects all in-cluster components: CoreDNS, Hubble, OpenEBS, application workloads.
+
+**Root Cause**:
+- Cilium ENI IPAM mode attaches a secondary ENI from the pod subnet (`10.0.4.0/24`) to the master node
+- This creates a route `10.0.4.0/24 dev ens6` on the master
+- When a pod on a worker sends a request to the API server at `10.0.1.x:6443`, the response packet is routed back via `ens6` (pod subnet) instead of `ens5` (public subnet) because `10.0.4.0/24` is a more specific match
+- Response has wrong source IP/interface — dropped by the network stack (classic asymmetric routing)
+- Cilium continuously re-creates the ENI even after manual route deletion (`ens6` → `ens7` → `ens8`)
+
+**Resolution**:
+Three-layer defense implemented in `master-runtime.sh`:
+
+1. **Systemd watchdog** (`fix-master-eni.service`) — installed *before* Cilium, runs every 3 seconds, detects any pod-subnet ENI on the master, brings it down and flushes routes:
+```bash
+cat << 'FIXSCRIPT' > /usr/local/bin/fix-master-eni.sh
+#!/bin/bash
+while true; do
+  for iface in $(ls /sys/class/net/ | grep -E '^ens[0-9]+$' | grep -v ens5); do
+    if ip addr show "$iface" 2>/dev/null | grep -q '10\.0\.4\.'; then
+      ip link set "$iface" down 2>/dev/null || true
+      ip route flush dev "$iface" 2>/dev/null || true
+    fi
+  done
+  sleep 3
+done
+FIXSCRIPT
+```
+
+2. **Cilium Helm flag** — tells operator to skip ENI allocation on control-plane nodes:
+```bash
+--set eni.excludeNodeLabelKey=node-role.kubernetes.io/control-plane
+```
+
+3. **Node annotation** — redundant safeguard:
+```bash
+kubectl annotate node "$NODENAME" io.cilium.aws/exclude-from-eni-allocation=true --overwrite
+```
+
+---
+
+## 18. CoreDNS scheduled on master — unreachable from worker pods
+
+**Issue**: CoreDNS pods get IPs in the pod subnet (`10.0.4.x`) but run on the master where the pod-subnet ENI is disabled. Worker pods cannot reach CoreDNS, causing DNS resolution failures and Hubble relay crash loops:
+```
+dial tcp: lookup hubble-peer.kube-system.svc.cluster.local. on 10.96.0.10:53: i/o timeout
+```
+
+**Root Cause**:
+- CoreDNS was scheduled on the master before the `NoSchedule` taint was applied
+- With the master's pod-subnet ENI disabled (fix for Issue #17), pods on workers cannot route traffic to pod IPs hosted on the master
+
+**Resolution**:
+- Patched CoreDNS deployment with nodeAffinity to exclude control-plane nodes, added to `master-runtime.sh` after taint/annotation block:
+```bash
+kubectl -n kube-system patch deployment coredns --type=json \
+  -p='[{"op":"add","path":"/spec/template/spec/affinity","value":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"node-role.kubernetes.io/control-plane","operator":"DoesNotExist"}]}]}}}}]' 2>/dev/null || true
+```
+
+---
+
+## 19. OpenEBS Helm timeout kills master-runtime.sh — auto-labeler never runs
+
+**Issue**: Node labels (`minio-worker`, `spark-worker`, etc.) never applied. Pods with node selectors stuck in `Pending` with:
+```
+0/5 nodes are available: 4 node(s) didn't match Pod's node affinity/selector
+```
+
+**Root Cause**:
+- OpenEBS Helm install fails with `timed out waiting for the condition` (post-install hooks can't reach API server during initial cluster setup)
+- `set -euxo pipefail` at top of `master-runtime.sh` causes the entire script to abort on this non-zero exit
+- Everything after OpenEBS — auto-label-nodes systemd service, k8s-auto-label service — never gets created
+
+**Resolution**:
+- Added `|| true` to the OpenEBS Helm install so the script continues even if post-install hooks timeout:
+```bash
+helm upgrade --install openebs openebs/openebs \
+  --namespace openebs --create-namespace \
+  --set engines.replicated.mayastor.enabled=false \
+  --set engines.local.zfs.enabled=false \
+  --set engines.local.lvm.enabled=false || true
+```
+
+---
+
+## 20. etcd EBS volume too small — future disk exhaustion risk
+
+**Issue**: Not yet triggered, but etcd configured with `quota-backend-bytes: 2147483648` (2GB) on a 2GB dedicated EBS volume. WAL files + snapshots + DB would fill the disk, causing etcd to go read-only and freeze the cluster.
+
+**Root Cause**:
+- Dedicated etcd EBS volume in Terraform was `volume_size = 2` with etcd quota set to the full disk size
+- No room for WAL files and snapshots
+
+**Resolution**:
+- Increased EBS to `volume_size = 10` in `master.tf`
+- Reduced etcd quota to `1073741824` (1GB) in `master-runtime.sh`
+- Updated Terraform etcd device size detection range from `1GB-3GB` to `5GB-11GB`
+
+---
+
+## 21. EC2 user-data 16KB limit — silent script truncation risk
+
+**Issue**: Total user-data size was 16,288 bytes — only 96 bytes under the 16,384-byte AWS limit. Any minor addition would cause silent truncation with no error.
+
+**Root Cause**:
+- Terraform user-data embeds two base64-encoded shell scripts (`common-runtime.sh` + `master-runtime.sh`) plus inline etcd mount logic
+- Base64 encoding inflates size by ~33%
+
+**Resolution**:
+- Changed from `user_data = <<-EOF` to `user_data_base64 = base64gzip(local.master_userdata)` in `master.tf`
+- Gzip compression reduces payload by 60-70%, providing ample headroom for future changes
