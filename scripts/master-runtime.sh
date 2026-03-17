@@ -82,6 +82,37 @@ kubectl -n kube-system delete configmap kube-proxy 2>/dev/null || true
 kubectl delete clusterrolebinding kube-proxy 2>/dev/null || true
 kubectl delete serviceaccount kube-proxy -n kube-system 2>/dev/null || true
 
+cat << 'FIXSCRIPT' > /usr/local/bin/fix-master-eni.sh
+#!/bin/bash
+while true; do
+  for iface in $(ls /sys/class/net/ | grep -E '^ens[0-9]+$' | grep -v ens5); do
+    if ip addr show "$iface" 2>/dev/null | grep -q '10\.0\.4\.'; then
+      ip link set "$iface" down 2>/dev/null || true
+      ip route flush dev "$iface" 2>/dev/null || true
+    fi
+  done
+  sleep 3
+done
+FIXSCRIPT
+chmod +x /usr/local/bin/fix-master-eni.sh
+
+cat << 'FIXUNIT' > /etc/systemd/system/fix-master-eni.service
+[Unit]
+Description=Disable pod-subnet ENI on master to prevent asymmetric routing
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/fix-master-eni.sh
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target
+FIXUNIT
+
+systemctl daemon-reload
+systemctl enable --now fix-master-eni.service
+
 helm repo add cilium https://helm.cilium.io/
 helm repo update
 
@@ -90,6 +121,7 @@ helm install cilium cilium/cilium \
   --namespace kube-system \
   --set ipam.mode=eni \
   --set eni.enabled=true \
+  --set eni.excludeNodeLabelKey=node-role.kubernetes.io/control-plane \
   --set routingMode=native \
   --set ipv4NativeRoutingCIDR="10.0.0.0/8" \
   --set kubeProxyReplacement=true \
@@ -102,10 +134,16 @@ helm install cilium cilium/cilium \
   --set eni.awsEnableInstanceTypeDetails=true \
   --set eni.updateEC2AdapterLimitViaAPI=true \
   --set eni.awsReleaseExcessIPs=true \
-  --set eni.subnetIDsFilter[0]="__POD_SUBNET_ID__" \
+  --set eni.subnetIDsFilter[0]="__POD_SUBNET_ID__"
 
 echo "Waiting for Cilium to initialize..."
 sleep 30
+
+kubectl taint nodes "$NODENAME" node-role.kubernetes.io/control-plane:NoSchedule --overwrite 2>/dev/null || true
+kubectl annotate node "$NODENAME" io.cilium.aws/exclude-from-eni-allocation=true --overwrite 2>/dev/null || true
+
+sleep 15
+kubectl -n kube-system patch deployment coredns --type=json -p='[{"op":"add","path":"/spec/template/spec/affinity","value":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"node-role.kubernetes.io/control-plane","operator":"DoesNotExist"}]}]}}}}]' 2>/dev/null || true
 
 helm repo add eks https://aws.github.io/eks-charts
 helm repo update
@@ -124,7 +162,7 @@ helm upgrade --install openebs openebs/openebs \
   --namespace openebs --create-namespace \
   --set engines.replicated.mayastor.enabled=false \
   --set engines.local.zfs.enabled=false \
-  --set engines.local.lvm.enabled=false
+  --set engines.local.lvm.enabled=false || true
 
 cat << 'EOD' > /usr/local/bin/auto-label-nodes.sh
 #!/bin/bash

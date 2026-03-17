@@ -1,43 +1,28 @@
 #!/bin/bash
-#
-# Common runtime setup for all servers (Control Plane and Nodes) - Golden AMI optimized
 
 set -euxo pipefail
 
-# Disable swap
 sudo swapoff -a
 
-# Keeps the swap off during reboot
 (crontab -l 2>/dev/null; echo "@reboot /sbin/swapoff -a") | crontab - || true
 
-# Apply sysctl params without reboot (Settings baked into /etc/sysctl.d/k8s.conf via AMI)
 sudo sysctl --system
 
-# Verify Cgroup v2 is enabled (K8s 1.34 standard)
 if [ ! -d "/sys/fs/cgroup/cgroup.procs" ]; then
     echo "Warning: Cgroup v2 not detected. K8s 1.34 performance may be degraded."
 fi
 
-# Retrieve the default interface IP address and set it for kubelet
 local_ip="$(ip -j route get 8.8.8.8 | jq -r '.[0].prefsrc')"
 local_dev="$(ip -j route get 8.8.8.8 | jq -r '.[0].dev')"
 
-# Workaround for Cilium AWS ENI IPAM: Force local traffic to use primary IP as source
-# Prevents etcd/kube-apiserver crashloop by ensuring localhost traffic doesn't get assigned a secondary Pod IP
 sudo ip route replace local $local_ip dev $local_dev table local proto kernel scope host src $local_ip
 
-# Write the local IP address to the kubelet default configuration file
 cat > /etc/default/kubelet << EOF
 KUBELET_EXTRA_ARGS=--node-ip=$local_ip --system-reserved=cpu=500m,memory=512Mi --kube-reserved=cpu=500m,memory=512Mi
 EOF
 
-# 2. NVMe Mount Optimization (The "IOPS" Boost)
-# Discovers ALL local instance store NVMe drives and:
-#   - 1 drive  → format as XFS directly
-#   - 2+ drives → RAID0 stripe with mdadm for maximum IOPS/throughput
 echo "Looking for available local NVMe instance store disks..."
 
-# Collect all unmounted instance store NVMe drives
 NVME_DRIVES=()
 for dev in $(ls /dev/nvme*n1 2>/dev/null); do
     MODEL=$(sudo nvme id-ctrl "$dev" 2>/dev/null | grep -i mn | awk -F':' '{print $2}' | xargs || true)
@@ -59,7 +44,6 @@ if [ "$DRIVE_COUNT" -eq 0 ]; then
     sudo chmod 777 /mnt/spark-nvme
 
 elif [ "$DRIVE_COUNT" -eq 1 ]; then
-    # Single drive — format directly as XFS
     DISK_DEV="${NVME_DRIVES[0]}"
     echo "Single NVMe drive detected: $DISK_DEV. Formatting as XFS..."
     
@@ -81,12 +65,8 @@ elif [ "$DRIVE_COUNT" -eq 1 ]; then
     echo "Single NVMe $DISK_DEV mounted at /mnt/spark-nvme"
 
 else
-    # Multiple drives — RAID0 stripe for maximum IOPS & throughput
     echo "Multiple NVMe drives detected: ${NVME_DRIVES[*]}. Creating RAID0 array..."
-    
-    # mdadm is already installed in the AMI
-    
-    # Check if /dev/md0 already exists
+
     if [ -e /dev/md0 ]; then
         echo "RAID array /dev/md0 already exists. Skipping creation."
     else
@@ -95,16 +75,13 @@ else
             --raid-devices="$DRIVE_COUNT" \
             "${NVME_DRIVES[@]}" \
             --force --run
-        
-        # Wait for array to initialize
+
         sudo mdadm --wait /dev/md0 2>/dev/null || true
         
-        # Save RAID config so it persists across reboots
         sudo mdadm --detail --scan | sudo tee -a /etc/mdadm/mdadm.conf
         sudo update-initramfs -u
     fi
     
-    # Format as XFS if not already
     FSTYPE=$(lsblk -no FSTYPE /dev/md0 2>/dev/null || true)
     if [ "$FSTYPE" != "xfs" ]; then
         sudo mkfs.xfs -f -K /dev/md0
