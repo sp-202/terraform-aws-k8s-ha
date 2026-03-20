@@ -52,22 +52,24 @@ select ACTION in "${actions[@]}"; do
 done
 
 echo "---------------------------------------------------"
-echo "Phase 2: Verifying Cluster and Fetching Kubeconfig"
+echo "Phase 2: EKS Post-Cluster Bootstrap"
 echo "---------------------------------------------------"
-./fetch_kubeconfig.sh
+CLUSTER_NAME=$(terraform output -raw eks_cluster_name)
+AWS_REGION=$(terraform output -raw aws_region 2>/dev/null || echo "us-east-1")
+POD_SUBNET_ID=$(terraform output -raw pod_subnet_id)
+
+chmod +x ./scripts/post-cluster-bootstrap.sh
+./scripts/post-cluster-bootstrap.sh "$CLUSTER_NAME" "$AWS_REGION" "$POD_SUBNET_ID"
 
 echo "---------------------------------------------------"
 echo "Deployment Complete!"
 echo "---------------------------------------------------"
-echo "Master Public IP: $(terraform output -raw master_public_ip)"
+echo "EKS Cluster: $CLUSTER_NAME"
+echo "Endpoint:    $(terraform output -raw eks_cluster_endpoint)"
+echo ""
+echo "Kubeconfig updated. Run:"
+echo "  kubectl get nodes -o wide"
 echo ""
 echo "To see Worker IPs (Dynamic ASG):"
 terraform output -raw worker_ips_command
 echo ""
-KUBE_EXPORT="export KUBECONFIG=$(pwd)/k3s.yaml"
-if ! grep -qF "$KUBE_EXPORT" ~/.bashrc; then
-    echo "$KUBE_EXPORT" >> ~/.bashrc
-    echo "Successfully added KUBECONFIG to ~/.bashrc"
-fi
-export KUBECONFIG=$(pwd)/k3s.yaml
-echo "Use 'kubectl get nodes' to verify the cluster."

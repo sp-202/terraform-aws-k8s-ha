@@ -5,7 +5,8 @@ resource "aws_vpc" "main" {
   enable_dns_support   = true
 
   tags = {
-    Name = "k8s-vpc"
+    Name                                        = "k8s-vpc"
+    "kubernetes.io/cluster/${var.cluster_name}" = "owned"
   }
 }
 
@@ -28,33 +29,38 @@ resource "aws_subnet" "public" {
   map_public_ip_on_launch = true
 
   tags = {
-    Name                          = "${var.cluster_name}-public-subnet"
-    "cilium.io/no-eni-allocation" = "true"
+    Name                                            = "${var.cluster_name}-public-subnet"
+    "cilium.io/no-eni-allocation"                   = "true"
+    "kubernetes.io/cluster/${var.cluster_name}"     = "owned"
+    "kubernetes.io/role/elb"                        = "1"
   }
 }
 
-# Private Subnet 1
+# Private Subnet — worker nodes run here
 resource "aws_subnet" "private" {
   vpc_id            = aws_vpc.main.id
   cidr_block        = var.private_subnet_cidr
   availability_zone = var.availability_zone
 
   tags = {
-    Name                          = "${var.cluster_name}-private-subnet-1"
-    "cilium.io/no-eni-allocation" = "true"
+    Name                                            = "${var.cluster_name}-private-subnet-1"
+    "cilium.io/no-eni-allocation"                   = "true"
+    "kubernetes.io/cluster/${var.cluster_name}"     = "owned"
+    "kubernetes.io/role/internal-elb"               = "1"
   }
 }
 
-# Pod Subnet (within main VPC)
+# Pod Subnet — Cilium ENI secondary IPs allocated here
 resource "aws_subnet" "pods" {
   vpc_id            = aws_vpc.main.id
   cidr_block        = var.pod_subnet_cidr
   availability_zone = var.availability_zone
 
   tags = {
-    Name                              = "${var.cluster_name}-pod-subnet"
-    "kubernetes.io/role/internal-elb" = "1"
-    "cilium-pod-subnet"               = "1"
+    Name                                            = "${var.cluster_name}-pod-subnet"
+    "kubernetes.io/cluster/${var.cluster_name}"     = "owned"
+    "kubernetes.io/role/internal-elb"               = "1"
+    "cilium-pod-subnet"                             = "1"
   }
 }
 

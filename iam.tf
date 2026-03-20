@@ -1,6 +1,9 @@
-# IAM Role for Nodes to modify their own Source/Dest Check
+# -------------------------------------------------------
+# IAM for EKS self-managed worker nodes
+# -------------------------------------------------------
+
 resource "aws_iam_role" "node_role" {
-  name = "k8s-node-role"
+  name = "${var.cluster_name}-node-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -16,9 +19,28 @@ resource "aws_iam_role" "node_role" {
   })
 }
 
+# Required for EKS self-managed nodes to register with the control plane
+resource "aws_iam_role_policy_attachment" "node_eks_worker" {
+  role       = aws_iam_role.node_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+}
+
+# Required for kubelet to pull images from ECR
+resource "aws_iam_role_policy_attachment" "node_ecr_readonly" {
+  role       = aws_iam_role.node_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+}
+
+# Required for VPC CNI (and Cilium ENI mode) to manage ENIs
+resource "aws_iam_role_policy_attachment" "node_eks_cni" {
+  role       = aws_iam_role.node_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+}
+
+# Custom policy for Cilium ENI mode + instance self-management
 resource "aws_iam_policy" "node_policy" {
-  name        = "k8s-node-policy"
-  description = "Allows k8s nodes to manage network interfaces and IP allocation (required for Cilium AWS ENI mode)"
+  name        = "${var.cluster_name}-node-policy"
+  description = "Allows k8s nodes to manage ENIs for Cilium AWS ENI mode"
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -31,10 +53,10 @@ resource "aws_iam_policy" "node_policy" {
           "ec2:DescribeSubnets",
           "ec2:DescribeVpcs",
           "ec2:DescribeInstanceTypes",
-          "ec2:DescribeInstanceTypeOfferings", # previously missing
-          "ec2:DescribeSecurityGroups",        # THIS was the crash cause
-          "ec2:DescribeAvailabilityZones",     # needed for ENI subnet selection
-          "ec2:DescribeRouteTables",           # needed by cilium-operator ENI allocator
+          "ec2:DescribeInstanceTypeOfferings",
+          "ec2:DescribeSecurityGroups",
+          "ec2:DescribeAvailabilityZones",
+          "ec2:DescribeRouteTables",
           "ec2:CreateNetworkInterface",
           "ec2:AttachNetworkInterface",
           "ec2:DetachNetworkInterface",
@@ -59,6 +81,24 @@ resource "aws_iam_role_policy_attachment" "node_attach" {
 }
 
 resource "aws_iam_instance_profile" "node_profile" {
-  name = "k8s-node-profile"
+  name = "${var.cluster_name}-node-profile"
   role = aws_iam_role.node_role.name
+}
+
+# Allow this node role to authenticate with EKS
+# (equivalent of adding the role to aws-auth ConfigMap)
+resource "aws_iam_role_policy" "node_eks_auth" {
+  name = "${var.cluster_name}-node-eks-auth"
+  role = aws_iam_role.node_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action   = "eks:DescribeCluster"
+        Effect   = "Allow"
+        Resource = aws_eks_cluster.main.arn
+      }
+    ]
+  })
 }

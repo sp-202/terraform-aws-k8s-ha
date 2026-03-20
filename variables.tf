@@ -41,10 +41,10 @@ variable "ssh_public_key_path" {
   default     = "~/.ssh/id_ed25519.pub"
 }
 
-variable "master_instance_type" {
-  description = "Instance type for the K8s master node"
+variable "eks_version" {
+  description = "Kubernetes version for the EKS control plane"
   type        = string
-  default     = "c7g.2xlarge" # 8 vCPU, 16 GiB RAM
+  default     = "1.34"
 }
 
 variable "worker_instance_type" {

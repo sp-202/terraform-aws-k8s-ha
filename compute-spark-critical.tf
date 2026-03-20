@@ -1,4 +1,4 @@
-# Dedicated spark critical driver/worker nodes
+# Dedicated spark critical driver/worker nodes (EKS self-managed)
 resource "aws_launch_template" "worker_spark_critical" {
   name_prefix   = "${var.cluster_name}-spark-critical-"
   image_id      = data.aws_ami.golden.id
@@ -25,45 +25,29 @@ resource "aws_launch_template" "worker_spark_critical" {
               #!/bin/bash
               set -ex
               exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
-              
-              TOKEN=$(curl -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
-              INSTANCE_ID=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" -s http://169.254.169.254/latest/meta-data/instance-id)
 
               echo "${base64encode(file("${path.module}/scripts/common-runtime.sh"))}" | base64 -d > /root/common-runtime.sh
-              chmod +x /root/common-runtime.sh
+              echo "${base64encode(file("${path.module}/scripts/worker-eks-bootstrap.sh"))}" | base64 -d > /root/worker-eks-bootstrap.sh
+              chmod +x /root/common-runtime.sh /root/worker-eks-bootstrap.sh
+
               /root/common-runtime.sh
-              
-              # Wait for master to be ready
-              sleep 60
 
-              aws ec2 modify-instance-attribute --instance-id $INSTANCE_ID --no-source-dest-check --region ${var.aws_region}
+              sed -i 's|__CLUSTER_NAME__|${var.cluster_name}|g' /root/worker-eks-bootstrap.sh
+              sed -i 's|__AWS_REGION__|${var.aws_region}|g' /root/worker-eks-bootstrap.sh
+              sed -i 's|__NODE_NAME__|spark-node|g' /root/worker-eks-bootstrap.sh
+              sed -i 's|__EKS_ENDPOINT__|${aws_eks_cluster.main.endpoint}|g' /root/worker-eks-bootstrap.sh
+              sed -i 's|__EKS_CA_DATA__|${aws_eks_cluster.main.certificate_authority[0].data}|g' /root/worker-eks-bootstrap.sh
 
-              echo "Joining Cluster..."
-              MAX_RETRIES=3
-              RETRY_COUNT=0
-              JOIN_SUCCESS=false
-
-              while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-                  if sudo kubeadm join ${aws_instance.master.private_ip}:6443 --token ${local.kubeadm_token} --discovery-token-unsafe-skip-ca-verification --node-name spark-node-$INSTANCE_ID; then
-                      JOIN_SUCCESS=true
-                      break
-                  fi
-                  RETRY_COUNT=$((RETRY_COUNT+1))
-                  sleep 30
-              done
-
-              if [ "$JOIN_SUCCESS" = false ]; then
-                  aws ec2 terminate-instances --instance-ids $INSTANCE_ID --region ${var.aws_region}
-                  exit 1
-              fi
+              /root/worker-eks-bootstrap.sh
               BASH
   )
   tag_specifications {
     resource_type = "instance"
     tags = {
-      Project = var.cluster_name
-      Name    = "spark-node"
-      Role    = "spark-node"
+      Project                                     = var.cluster_name
+      Name                                        = "spark-node"
+      Role                                        = "spark-node"
+      "kubernetes.io/cluster/${var.cluster_name}" = "owned"
     }
   }
   lifecycle {
@@ -86,5 +70,10 @@ resource "aws_autoscaling_group" "worker_spark_critical" {
     value               = "spark-node"
     propagate_at_launch = true
   }
-  depends_on = [aws_instance.master]
+  tag {
+    key                 = "kubernetes.io/cluster/${var.cluster_name}"
+    value               = "owned"
+    propagate_at_launch = true
+  }
+  depends_on = [aws_eks_cluster.main]
 }
