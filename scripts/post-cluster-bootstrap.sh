@@ -119,11 +119,11 @@ EKS_ENDPOINT=$(aws eks describe-cluster \
   --region "$AWS_REGION" \
   --query 'cluster.endpoint' --output text | sed 's|https://||')
 
-helm repo add cilium https://helm.cilium.io/
+helm repo add cilium https://helm.cilium.io/ 2>/dev/null || helm repo update cilium
 helm repo update
 
 helm upgrade --install cilium cilium/cilium \
-  --version 1.16.5 \
+  --version 1.19.1 \
   --namespace kube-system \
   --set ipam.mode=eni \
   --set eni.enabled=true \
@@ -149,7 +149,7 @@ kubectl -n kube-system rollout status daemonset/cilium --timeout=120s || true
 # Step 5 — Install AWS Node Termination Handler
 # -------------------------------------------------------
 echo "==> Installing AWS Node Termination Handler..."
-helm repo add eks https://aws.github.io/eks-charts
+helm repo add eks https://aws.github.io/eks-charts 2>/dev/null || helm repo update eks
 helm repo update
 helm upgrade --install aws-node-termination-handler \
   --namespace kube-system \
@@ -164,7 +164,7 @@ echo "Waiting for I/O to settle before OpenEBS install..."
 sleep 30
 
 echo "==> Installing OpenEBS..."
-helm repo add openebs https://openebs.github.io/openebs
+helm repo add openebs https://openebs.github.io/openebs 2>/dev/null || helm repo update openebs
 helm repo update
 helm upgrade --install openebs openebs/openebs \
   --namespace openebs --create-namespace \
@@ -194,35 +194,28 @@ spec:
       labels:
         app: node-auto-labeler
     spec:
-      hostPID: true
       serviceAccountName: node-auto-labeler
       tolerations:
         - operator: Exists
       containers:
         - name: labeler
           image: bitnami/kubectl:latest
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
           command:
             - /bin/sh
             - -c
             - |
               while true; do
-                NODE=$(cat /etc/hostname)
-                case "$NODE" in
-                  spark-worker-*) kubectl label node "$NODE" node-role.kubernetes.io/spark-worker='' --overwrite 2>/dev/null || true ;;
-                  minio-worker-*) kubectl label node "$NODE" node-role.kubernetes.io/minio-worker='' --overwrite 2>/dev/null || true ;;
-                  spark-node-*)   kubectl label node "$NODE" node-role.kubernetes.io/spark-node='' --overwrite 2>/dev/null || true ;;
-                  k8s-gp-node-*)  kubectl label node "$NODE" node-role.kubernetes.io/k8s-gp-node='' --overwrite 2>/dev/null || true ;;
-                esac
+                ROLE=$(kubectl get node "$NODE_NAME" -o jsonpath='{.metadata.labels.node-role}' 2>/dev/null)
+                if [ -n "$ROLE" ]; then
+                  kubectl label node "$NODE_NAME" "node-role.kubernetes.io/${ROLE}=" --overwrite 2>/dev/null || true
+                fi
                 sleep 30
               done
-          volumeMounts:
-            - name: hostname
-              mountPath: /etc/hostname
-              readOnly: true
-      volumes:
-        - name: hostname
-          hostPath:
-            path: /etc/hostname
 ---
 apiVersion: v1
 kind: ServiceAccount

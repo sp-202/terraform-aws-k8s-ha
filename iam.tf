@@ -31,13 +31,9 @@ resource "aws_iam_role_policy_attachment" "node_ecr_readonly" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
 }
 
-# Required for VPC CNI (and Cilium ENI mode) to manage ENIs
-resource "aws_iam_role_policy_attachment" "node_eks_cni" {
-  role       = aws_iam_role.node_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
-}
-
 # Custom policy for Cilium ENI mode + instance self-management
+# (AmazonEKS_CNI_Policy removed — it's for VPC CNI which is replaced by Cilium.
+#  Cilium ENI permissions are covered by the custom node_policy below.)
 resource "aws_iam_policy" "node_policy" {
   name        = "${var.cluster_name}-node-policy"
   description = "Allows k8s nodes to manage ENIs for Cilium AWS ENI mode"
@@ -80,25 +76,15 @@ resource "aws_iam_role_policy_attachment" "node_attach" {
   policy_arn = aws_iam_policy.node_policy.arn
 }
 
+resource "aws_iam_role_policy_attachment" "node_ssm" {
+  role       = aws_iam_role.node_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
 resource "aws_iam_instance_profile" "node_profile" {
   name = "${var.cluster_name}-node-profile"
   role = aws_iam_role.node_role.name
 }
 
-# Allow this node role to authenticate with EKS
-# (equivalent of adding the role to aws-auth ConfigMap)
-resource "aws_iam_role_policy" "node_eks_auth" {
-  name = "${var.cluster_name}-node-eks-auth"
-  role = aws_iam_role.node_role.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Action   = "eks:DescribeCluster"
-        Effect   = "Allow"
-        Resource = aws_eks_cluster.main.arn
-      }
-    ]
-  })
-}
+# eks:DescribeCluster is already included in AmazonEKSWorkerNodePolicy,
+# and node auth is now handled by aws_eks_access_entry in eks.tf.

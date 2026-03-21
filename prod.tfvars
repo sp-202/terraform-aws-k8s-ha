@@ -1,9 +1,6 @@
 # Production environment - full-size instances (matches original defaults)
 cluster_name = "k8s-ha-cluster"
 
-# Master node
-master_instance_type = "c7g.2xlarge"
-
 # GP workers
 gp_worker_instance_type = "im4gn.4xlarge"
 

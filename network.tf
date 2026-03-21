@@ -65,6 +65,34 @@ resource "aws_subnet" "pods" {
 }
 
 
+# EKS control-plane subnets — one per AZ in the region, no workers run here.
+# EKS requires subnets in ≥2 AZs; this block satisfies that automatically
+# regardless of how many AZs us-east-1 has.
+locals {
+  eks_cp_azs = data.aws_availability_zones.available.names
+}
+
+resource "aws_subnet" "eks_cp" {
+  for_each = toset(local.eks_cp_azs)
+
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = cidrsubnet(var.eks_cp_subnet_base_cidr, 4, index(local.eks_cp_azs, each.key))
+  availability_zone = each.key
+
+  tags = {
+    Name                                        = "${var.cluster_name}-eks-cp-${each.key}"
+    "cilium.io/no-eni-allocation"               = "true"
+    "kubernetes.io/cluster/${var.cluster_name}" = "owned"
+  }
+}
+
+resource "aws_route_table_association" "eks_cp" {
+  for_each = aws_subnet.eks_cp
+
+  subnet_id      = each.value.id
+  route_table_id = aws_route_table.private.id
+}
+
 # NAT Gateway (for Private Subnet internet access)
 resource "aws_eip" "nat" {
   domain = "vpc"

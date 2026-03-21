@@ -7,7 +7,7 @@ resource "aws_launch_template" "minio_worker" {
 
   network_interfaces {
     associate_public_ip_address = false
-    security_groups             = [aws_security_group.worker_sg.id]
+    security_groups             = [aws_security_group.worker_sg.id, aws_eks_cluster.main.vpc_config[0].cluster_security_group_id]
   }
   iam_instance_profile {
     name = aws_iam_instance_profile.node_profile.name
@@ -43,6 +43,7 @@ resource "aws_launch_template" "minio_worker" {
               sed -i 's|__NODE_NAME__|minio-worker|g' /root/worker-eks-bootstrap.sh
               sed -i 's|__EKS_ENDPOINT__|${aws_eks_cluster.main.endpoint}|g' /root/worker-eks-bootstrap.sh
               sed -i 's|__EKS_CA_DATA__|${aws_eks_cluster.main.certificate_authority[0].data}|g' /root/worker-eks-bootstrap.sh
+              sed -i 's|__CLUSTER_DNS__|${cidrhost(aws_eks_cluster.main.kubernetes_network_config[0].service_ipv4_cidr, 10)}|g' /root/worker-eks-bootstrap.sh
 
               /root/worker-eks-bootstrap.sh
               BASH
@@ -82,5 +83,5 @@ resource "aws_autoscaling_group" "minio_worker" {
     value               = "owned"
     propagate_at_launch = true
   }
-  depends_on = [aws_eks_cluster.main]
+  depends_on = [aws_eks_cluster.main, aws_eks_access_entry.nodes]
 }

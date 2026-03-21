@@ -1,3 +1,10 @@
+data "aws_caller_identity" "current" {}
+
+data "aws_availability_zones" "available" {
+  state         = "available"
+  exclude_names = ["us-east-1e"]
+}
+
 data "aws_ami" "ubuntu" {
   most_recent = true
   owners      = ["099720109477"] # Canonical

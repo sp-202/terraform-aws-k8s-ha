@@ -3,6 +3,11 @@
 # master_sg is replaced by eks_cluster_sg (in eks.tf)
 # -------------------------------------------------------
 
+resource "aws_key_pair" "k8s_key" {
+  key_name   = "${var.cluster_name}-key"
+  public_key = file(var.ssh_public_key_path)
+}
+
 resource "aws_security_group" "worker_sg" {
   name        = "${var.cluster_name}-worker-sg"
   description = "Security group for K8s self-managed worker nodes"

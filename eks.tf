@@ -70,14 +70,17 @@ resource "aws_eks_cluster" "main" {
   role_arn = aws_iam_role.eks_cluster_role.arn
 
   vpc_config {
-    subnet_ids = [
-      aws_subnet.private.id,
-      aws_subnet.pods.id,
-      aws_subnet.public.id,
-    ]
+    subnet_ids = concat(
+      values(aws_subnet.eks_cp)[*].id,
+      [aws_subnet.private.id, aws_subnet.pods.id, aws_subnet.public.id],
+    )
     security_group_ids      = [aws_security_group.eks_cluster_sg.id]
     endpoint_private_access = true
     endpoint_public_access  = true
+  }
+
+  access_config {
+    authentication_mode = "API_AND_CONFIG_MAP"
   }
 
   enabled_cluster_log_types = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
@@ -95,6 +98,32 @@ resource "aws_eks_cluster" "main" {
 
   tags = {
     Name = var.cluster_name
+  }
+}
+
+# EKS Access Entry — authorise the node IAM role to register with the cluster.
+# Replaces the aws-auth ConfigMap race condition: this is created during
+# terraform apply BEFORE ASGs launch, so nodes can register immediately.
+resource "aws_eks_access_entry" "nodes" {
+  cluster_name  = aws_eks_cluster.main.name
+  principal_arn = aws_iam_role.node_role.arn
+  type          = "EC2_LINUX"
+}
+
+# Grant the IAM identity running Terraform cluster-admin access.
+# Without this, the cluster creator cannot use kubectl against the cluster.
+resource "aws_eks_access_entry" "admin" {
+  cluster_name  = aws_eks_cluster.main.name
+  principal_arn = data.aws_caller_identity.current.arn
+}
+
+resource "aws_eks_access_policy_association" "admin" {
+  cluster_name  = aws_eks_cluster.main.name
+  principal_arn = data.aws_caller_identity.current.arn
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+
+  access_scope {
+    type = "cluster"
   }
 }
 
