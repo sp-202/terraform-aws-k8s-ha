@@ -327,3 +327,12 @@ helm upgrade --install openebs openebs/openebs \
 **Resolution**:
 - Changed from `user_data = <<-EOF` to `user_data_base64 = base64gzip(local.master_userdata)` in `master.tf`
 - Gzip compression reduces payload by 60-70%, providing ample headroom for future changes
+
+
+
+...Successfully got an update from the "prometheus-community" chart repository
+Update Complete. ⎈Happy Helming!⎈
++ helm upgrade --install cilium cilium/cilium --version 1.19.1 --namespace kube-system --set ipam.mode=eni --set eni.enabled=true --set routingMode=native --set ipv4NativeRoutingCIDR=10.0.0.0/8 --set kubeProxyReplacement=true --set k8sServiceHost=304C5D44918D121E4411583B04D39A5E.gr7.us-east-1.eks.amazonaws.com --set k8sServicePort=443 --set socketLB.hostNamespaceOnly=false --set bpf.masquerade=true --set hubble.relay.enabled=true --set hubble.ui.enabled=true --set eni.awsEnableInstanceTypeDetails=true --set eni.updateEC2AdapterLimitViaAPI=true --set eni.awsReleaseExcessIPs=true --set 'eni.subnetIDsFilter[0]=subnet-0cd41fa076bacea5d'
+Release "cilium" does not exist. Installing it now.
+E0321 20:33:54.511277   22858 round_tripper.go:63] CancelRequest not implemented by *kube.RetryingRoundTripper
+E0321 20:33:54.511283   22858 request.go:1196] "Unexpected error when reading response body" err="net/http: request canceled (Client.Timeout or context cancellation while reading body)"
