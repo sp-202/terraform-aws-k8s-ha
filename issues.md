@@ -328,11 +328,187 @@ helm upgrade --install openebs openebs/openebs \
 - Changed from `user_data = <<-EOF` to `user_data_base64 = base64gzip(local.master_userdata)` in `master.tf`
 - Gzip compression reduces payload by 60-70%, providing ample headroom for future changes
 
+---
+
+# EKS Migration Issues (Post Issue #21)
+
+The following issues were encountered after migrating the control plane from self-managed EC2 master to AWS EKS with self-managed worker nodes.
+
+---
+
+## 22. KubeletConfiguration API version mismatch (v1 vs v1beta1)
+
+**Issue**: Kubelet fails to start with:
+```
+no kind "KubeletConfiguration" is registered for version "kubelet.config.k8s.io/v1"
+```
+
+**Root Cause**:
+- K8s 1.34 kubelet does NOT yet support `kubelet.config.k8s.io/v1` for KubeletConfiguration — only `v1beta1` is registered
+- The bootstrap script was initially written with `v1` assuming 1.34 had graduated it
+
+**Resolution**:
+- Changed `apiVersion` in `/var/lib/kubelet/config.yaml` from `kubelet.config.k8s.io/v1` to `kubelet.config.k8s.io/v1beta1` in `worker-eks-bootstrap.sh`
+
+---
+
+## 23. Missing `interactiveMode` in exec credential plugin
+
+**Issue**: Kubelet fails to start with:
+```
+interactiveMode must be specified for kubelet to use exec authentication plugin
+```
+
+**Root Cause**:
+- K8s 1.34 kubelet requires the `interactiveMode` field in the exec credential config inside kubeconfig
+- Without it, kubelet refuses to initialize the exec-based token provider (`aws eks get-token`)
+
+**Resolution**:
+- Added `interactiveMode: Never` under the `exec:` section in the kubelet kubeconfig in `worker-eks-bootstrap.sh`:
+```yaml
+users:
+- name: kubelet
+  user:
+    exec:
+      apiVersion: client.authentication.k8s.io/v1
+      command: /usr/local/bin/aws
+      interactiveMode: Never
+      args:
+        - eks
+        - get-token
+        - --cluster-name
+        - k8s-dev-cluster
+```
+
+---
+
+## 24. Kubelet stuck silently — `--bootstrap-kubeconfig` incompatible with exec credentials
+
+**Issue**: Kubelet logs one `Failed to connect to apiserver` message with 1-second timeout, then goes completely silent. No further logs. Process sleeping on futex with only 1.05s CPU over 4+ minutes.
+
+**Root Cause**:
+- `--bootstrap-kubeconfig` was pointing to the same exec-credential kubeconfig as `--kubeconfig`
+- This triggered the TLS bootstrap flow, which is fundamentally incompatible with exec-based authentication (aws eks get-token)
+- Kubelet entered an internal retry loop against the bootstrap path, hitting a 1s healthz timeout each cycle, with no logs emitted after the first failure
+- Network was fine (curl to EKS endpoint with CA cert worked), confirming the issue was in kubelet's bootstrap logic, not connectivity
+
+**Diagnosis**:
+- `journalctl -u kubelet` showed only one line then silence
+- `cat /proc/<pid>/stack` showed futex sleep
+- `curl --cacert /etc/kubernetes/pki/ca.crt https://<eks-endpoint>` returned 200 from the node
+- CPU time analysis: 1.05s CPU over 4+ minutes = stuck, not busy-looping
+
+**Resolution**:
+- Removed `--bootstrap-kubeconfig` flag entirely from the kubelet systemd drop-in (`20-eks.conf`)
+- With exec credentials (`aws eks get-token`), kubelet authenticates directly — TLS bootstrap is not needed or supported
+- The golden AMI's base `10-kubeadm.conf` drop-in included `--bootstrap-kubeconfig`; the new `20-eks.conf` overrides it with `ExecStart=` (clear) followed by a clean ExecStart without the flag
+
+---
+
+## 25. Cilium CrashLoopBackOff — BPF masquerade requires enableIPv4Masquerade
+
+**Issue**: Cilium agent pods crash with:
+```
+BPF masquerade requires --enable-ipv4-masquerade="true"
+```
+
+**Root Cause**:
+- `bpf.masquerade=true` was set in the Cilium Helm values for optimal ENI-mode performance
+- However, `enableIPv4Masquerade` defaults to `false` in ENI mode
+- BPF masquerade is an implementation of masquerade — it cannot work if the base masquerade feature is disabled
+
+**Resolution**:
+- Added `--set enableIPv4Masquerade=true` to the Cilium Helm install in `post-cluster-bootstrap.sh`:
+```bash
+helm upgrade --install cilium cilium/cilium \
+  --set enableIPv4Masquerade=true \
+  --set bpf.masquerade=true
+```
+
+---
+
+## 26. kube-proxy ImagePullBackOff — ECR auth failure (not needed with Cilium)
+
+**Issue**: kube-proxy pods stuck in ImagePullBackOff:
+```
+Failed to pull image "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/kube-proxy:v1.34.0-eksbuild.2"
+```
+
+**Root Cause**:
+- EKS automatically creates a kube-proxy DaemonSet that pulls from private ECR
+- The golden AMI does not have the `ecr-credential-provider` binary, so kubelet cannot authenticate to ECR
+- kube-proxy is redundant when Cilium runs with `kubeProxyReplacement=true`
+
+**Resolution**:
+- Deleted kube-proxy DaemonSet and ConfigMap entirely — not needed with Cilium KPR
+- Added deletion as Step 4b in `post-cluster-bootstrap.sh`:
+```bash
+kubectl -n kube-system delete daemonset kube-proxy --ignore-not-found
+kubectl -n kube-system delete configmap kube-proxy --ignore-not-found
+```
+
+---
+
+## 27. CoreDNS ErrImagePull — ECR credential provider missing from golden AMI
+
+**Issue**: CoreDNS pods stuck in ErrImagePull:
+```
+Failed to pull image "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/coredns:v1.12.3-eksbuild.1"
+```
+
+**Root Cause**:
+- Same ECR auth failure as kube-proxy (Issue #26), but CoreDNS cannot simply be deleted — it is required for cluster DNS
+- `ecr-credential-provider` binary is not installed on the golden AMI (`k8s-ubuntu-2404-arm64-golden-v2`)
+- Without it, kubelet has no way to authenticate to private ECR registries
+
+**Workaround** (applied in `worker-eks-bootstrap.sh`):
+- If `ecr-credential-provider` binary is not found, pre-pull the CoreDNS image using containerd CLI with a temporary ECR token:
+```bash
+ECR_PASSWORD=$(aws ecr get-login-password --region "$AWS_REGION")
+ctr -n k8s.io image pull --user "AWS:${ECR_PASSWORD}" \
+  "602401143452.dkr.ecr.${AWS_REGION}.amazonaws.com/eks/coredns:v1.12.3-eksbuild.1"
+```
+
+**Permanent fix**: Added `ecr-credential-provider` binary (from `kubernetes/cloud-provider-aws` releases, pinned to `v1.34.0`) to the golden AMI Packer build in `packer/common-ami.sh` section 11. The bootstrap script (`worker-eks-bootstrap.sh`) detects this binary and configures kubelet's `--image-credential-provider-config` and `--image-credential-provider-bin-dir` flags automatically. The `ctr` pre-pull path remains as a fallback for older AMIs without the binary.
+
+---
+
+## 28. CoreDNS CrashLoopBackOff — DNS forwarding loop with systemd-resolved
+
+**Issue**: CoreDNS pods in CrashLoopBackOff with:
+```
+Loop (127.0.0.1:42583 -> :53) detected for zone "."
+```
+
+**Root Cause**:
+- CoreDNS ConfigMap had `forward . /etc/resolv.conf`
+- On Ubuntu 24.04 nodes running systemd-resolved, `/etc/resolv.conf` is a symlink to `/run/systemd/resolve/stub-resolv.conf` which contains `nameserver 127.0.0.53`
+- `127.0.0.53` (systemd-resolved) forwards DNS to the cluster DNS (CoreDNS via ClusterIP `172.20.0.10`), creating an infinite loop:
+  ```
+  CoreDNS → /etc/resolv.conf → 127.0.0.53 → cluster DNS → CoreDNS → ∞
+  ```
+
+**Resolution**:
+- Patched CoreDNS ConfigMap to forward to VPC DNS resolver instead of `/etc/resolv.conf`
+- VPC DNS is always at VPC CIDR base + 2 = `10.0.0.2`
+- Added as Step 4c in `post-cluster-bootstrap.sh`:
+```bash
+kubectl -n kube-system get configmap coredns -o yaml | \
+  sed 's|forward . /etc/resolv.conf|forward . 10.0.0.2|' | \
+  kubectl apply -f - || true
+kubectl -n kube-system rollout restart deployment coredns || true
+```
+The error is simple: the download URL I used returned 404 Not Found.
 
 
-...Successfully got an update from the "prometheus-community" chart repository
-Update Complete. ⎈Happy Helming!⎈
-+ helm upgrade --install cilium cilium/cilium --version 1.19.1 --namespace kube-system --set ipam.mode=eni --set eni.enabled=true --set routingMode=native --set ipv4NativeRoutingCIDR=10.0.0.0/8 --set kubeProxyReplacement=true --set k8sServiceHost=304C5D44918D121E4411583B04D39A5E.gr7.us-east-1.eks.amazonaws.com --set k8sServicePort=443 --set socketLB.hostNamespaceOnly=false --set bpf.masquerade=true --set hubble.relay.enabled=true --set hubble.ui.enabled=true --set eni.awsEnableInstanceTypeDetails=true --set eni.updateEC2AdapterLimitViaAPI=true --set eni.awsReleaseExcessIPs=true --set 'eni.subnetIDsFilter[0]=subnet-0cd41fa076bacea5d'
-Release "cilium" does not exist. Installing it now.
-E0321 20:33:54.511277   22858 round_tripper.go:63] CancelRequest not implemented by *kube.RetryingRoundTripper
-E0321 20:33:54.511283   22858 request.go:1196] "Unexpected error when reading response body" err="net/http: request canceled (Client.Timeout or context cancellation while reading body)"
+curl: (22) The requested URL returned error: 404
+The URL I guessed was:
+
+
+https://github.com/kubernetes/cloud-provider-aws/releases/download/v1.34.0/ecr-credential-provider-linux-arm64
+But I don't know the exact asset filename in the release. The repo (kubernetes/cloud-provider-aws) does have a v1.34.0 release (I can see Release 1.34.0 - 6 months ago), but the binary asset name might be different — e.g., it could be:
+
+ecr-credential-provider-arm64
+ecr-credential-provider_v1.34.0_linux_arm64
+or packaged as a .tar.gz
+Can you check the assets on the v1.34.0 release page and tell me the exact filename for the arm64 binary?

@@ -27,10 +27,24 @@ if [ -z "$POD_SUBNET_ID" ]; then
 fi
 
 # -------------------------------------------------------
-# Step 1 — Update local kubeconfig
+# Step 1 — Update local kubeconfig and wait for EKS API
 # -------------------------------------------------------
 echo "==> Updating kubeconfig..."
 aws eks update-kubeconfig --region "$AWS_REGION" --name "$CLUSTER_NAME"
+
+echo "==> Waiting for EKS API server to become responsive..."
+for i in $(seq 1 30); do
+  if kubectl cluster-info >/dev/null 2>&1; then
+    echo "EKS API server is ready."
+    break
+  fi
+  if [ "$i" -eq 30 ]; then
+    echo "ERROR: EKS API server not responsive after 5 minutes. Aborting."
+    exit 1
+  fi
+  echo "  EKS API not ready yet, retrying... (${i}/30)"
+  sleep 10
+done
 kubectl cluster-info
 
 # -------------------------------------------------------
@@ -105,13 +119,27 @@ aws eks delete-addon \
   --region "$AWS_REGION" 2>/dev/null && echo "vpc-cni addon removed" || echo "vpc-cni addon not present, skipping"
 
 # -------------------------------------------------------
-# Step 4 — Install Cilium
+# Step 4 — Wait for at least one node, then install Cilium
 #
 # Key differences from the old kubeadm setup:
 #   - k8sServiceHost is the EKS endpoint hostname (not master private IP)
 #   - k8sServicePort is 443 (EKS API server listens on 443, not 6443)
 #   - No eni.excludeNodeLabelKey needed — there is no control-plane node
 # -------------------------------------------------------
+echo "==> Waiting for at least one worker node to register..."
+for i in $(seq 1 60); do
+  NODE_COUNT=$(kubectl get nodes --no-headers 2>/dev/null | wc -l)
+  if [ "$NODE_COUNT" -ge 1 ]; then
+    echo "  ${NODE_COUNT} node(s) registered. Proceeding with Cilium install."
+    break
+  fi
+  if [ "$i" -eq 60 ]; then
+    echo "WARNING: No nodes registered after 10 minutes. Installing Cilium anyway (DaemonSet will schedule when nodes join)."
+  fi
+  echo "  No nodes yet, waiting... (${i}/60)"
+  sleep 10
+done
+
 echo "==> Installing Cilium..."
 
 EKS_ENDPOINT=$(aws eks describe-cluster \
@@ -125,6 +153,7 @@ helm repo update
 helm upgrade --install cilium cilium/cilium \
   --version 1.19.1 \
   --namespace kube-system \
+  --timeout 10m0s \
   --set ipam.mode=eni \
   --set eni.enabled=true \
   --set routingMode=native \
@@ -133,6 +162,7 @@ helm upgrade --install cilium cilium/cilium \
   --set k8sServiceHost="$EKS_ENDPOINT" \
   --set k8sServicePort=443 \
   --set socketLB.hostNamespaceOnly=false \
+  --set enableIPv4Masquerade=true \
   --set bpf.masquerade=true \
   --set hubble.relay.enabled=true \
   --set hubble.ui.enabled=true \
@@ -143,7 +173,25 @@ helm upgrade --install cilium cilium/cilium \
 
 echo "Waiting for Cilium to initialize..."
 sleep 30
-kubectl -n kube-system rollout status daemonset/cilium --timeout=120s || true
+kubectl -n kube-system rollout status daemonset/cilium --timeout=180s || true
+
+# -------------------------------------------------------
+# Step 4b — Delete kube-proxy (Cilium replaces it)
+# -------------------------------------------------------
+echo "==> Deleting kube-proxy (replaced by Cilium kubeProxyReplacement)..."
+kubectl -n kube-system delete daemonset kube-proxy --ignore-not-found
+kubectl -n kube-system delete configmap kube-proxy --ignore-not-found
+
+# -------------------------------------------------------
+# Step 4c — Fix CoreDNS forward to VPC DNS resolver
+# Nodes run systemd-resolved (127.0.0.53) which forwards to cluster DNS,
+# creating a loop. Forward to VPC DNS (base + 2) instead.
+# -------------------------------------------------------
+echo "==> Patching CoreDNS to forward to VPC DNS resolver..."
+kubectl -n kube-system get configmap coredns -o yaml | \
+  sed 's|forward . /etc/resolv.conf|forward . 10.0.0.2|' | \
+  kubectl apply -f - || true
+kubectl -n kube-system rollout restart deployment coredns || true
 
 # -------------------------------------------------------
 # Step 5 — Install AWS Node Termination Handler
@@ -153,6 +201,7 @@ helm repo add eks https://aws.github.io/eks-charts 2>/dev/null || helm repo upda
 helm repo update
 helm upgrade --install aws-node-termination-handler \
   --namespace kube-system \
+  --timeout 5m0s \
   --set enableSpotInterruptionDraining=true \
   --set enableRebalanceMonitoring=true \
   eks/aws-node-termination-handler
@@ -168,6 +217,7 @@ helm repo add openebs https://openebs.github.io/openebs 2>/dev/null || helm repo
 helm repo update
 helm upgrade --install openebs openebs/openebs \
   --namespace openebs --create-namespace \
+  --timeout 5m0s \
   --set engines.replicated.mayastor.enabled=false \
   --set engines.local.zfs.enabled=false \
   --set engines.local.lvm.enabled=false || true

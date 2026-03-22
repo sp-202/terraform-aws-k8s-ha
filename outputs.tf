@@ -35,6 +35,6 @@ output "pod_subnet_id" {
 }
 
 output "worker_ips_command" {
-  description = "List running worker IPs via ASG"
-  value       = "aws ec2 describe-instances --filters \"Name=tag:aws:autoscaling:groupName,Values=${aws_autoscaling_group.workers.name}\" \"Name=instance-state-name,Values=running\" --query \"Reservations[*].Instances[*].PrivateIpAddress\" --output text"
+  description = "List all running worker IPs"
+  value       = "aws ec2 describe-instances --region ${var.aws_region} --filters \"Name=tag:Project,Values=${var.cluster_name}\" \"Name=instance-state-name,Values=running\" --query \"Reservations[*].Instances[*].[PrivateIpAddress,Tags[?Key=='Name'].Value|[0]]\" --output table"
 }
