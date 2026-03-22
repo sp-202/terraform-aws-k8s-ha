@@ -22,6 +22,11 @@ resource "aws_launch_template" "worker" {
     associate_public_ip_address = false
     security_groups             = [aws_security_group.worker_sg.id, aws_eks_cluster.main.vpc_config[0].cluster_security_group_id]
   }
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 2
+  }
 
   user_data = base64encode(<<-EOF
               #!/bin/bash

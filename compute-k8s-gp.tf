@@ -20,6 +20,11 @@ resource "aws_launch_template" "k8s_worker_node" {
       delete_on_termination = true
     }
   }
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 2
+  }
 
   user_data = base64encode(<<-BASH
               #!/bin/bash

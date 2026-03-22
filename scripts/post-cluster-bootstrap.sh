@@ -32,17 +32,32 @@ fi
 echo "==> Updating kubeconfig..."
 aws eks update-kubeconfig --region "$AWS_REGION" --name "$CLUSTER_NAME"
 
+# Fix exec credential apiVersion — older AWS CLI (<2.12) writes v1alpha1 which
+# kubectl 1.24+ rejects. Force it to v1beta1 (supported by all kubectl 1.20+).
+KUBECONFIG_FILE="${KUBECONFIG:-$HOME/.kube/config}"
+if grep -q 'client.authentication.k8s.io/v1alpha1' "$KUBECONFIG_FILE" 2>/dev/null; then
+  echo "  Fixing stale v1alpha1 apiVersion in kubeconfig (your AWS CLI needs updating)..."
+  sed -i 's|client.authentication.k8s.io/v1alpha1|client.authentication.k8s.io/v1beta1|g' "$KUBECONFIG_FILE"
+fi
+
 echo "==> Waiting for EKS API server to become responsive..."
-for i in $(seq 1 30); do
-  if kubectl cluster-info >/dev/null 2>&1; then
-    echo "EKS API server is ready."
-    break
-  fi
-  if [ "$i" -eq 30 ]; then
-    echo "ERROR: EKS API server not responsive after 5 minutes. Aborting."
+# EKS marks the cluster ACTIVE before the API endpoint DNS has fully propagated.
+# Allow up to 10 minutes (60 × 10s). On each failure print the real error so
+# connectivity problems (security group, DNS, IAM) are immediately visible.
+for i in $(seq 1 60); do
+  ERR=$(kubectl cluster-info 2>&1) && { echo "EKS API server is ready."; break; }
+  if [ "$i" -eq 60 ]; then
+    echo "ERROR: EKS API server not responsive after 10 minutes."
+    echo "Last error: $ERR"
+    echo ""
+    echo "Common causes:"
+    echo "  1. DNS not propagated yet — wait and retry"
+    echo "  2. Your IP is blocked — check endpoint_public_access_cidrs in eks.tf"
+    echo "  3. IAM — run: aws sts get-caller-identity"
+    echo "  4. Private-only cluster — you need to be on VPN or inside the VPC"
     exit 1
   fi
-  echo "  EKS API not ready yet, retrying... (${i}/30)"
+  echo "  EKS API not ready yet (${i}/60): $(echo "$ERR" | tail -1)"
   sleep 10
 done
 kubectl cluster-info

@@ -56,6 +56,8 @@ sudo apt-get install -y \
     software-properties-common \
     jq \
     unzip \
+    wget \
+    git \
     nvme-cli \
     mdadm \
     iproute2 \
@@ -238,41 +240,45 @@ rm -rf helm.tar.gz "linux-${CLI_ARCH}/"
 
 helm version
 
-echo "Installing ECR credential provider $ECR_CRED_VERSION..."
+echo "Building ECR credential provider $ECR_CRED_VERSION from source..."
+# Neither the GitHub release binary nor the registry.k8s.io image exists for v1.32+.
+# Build from the official upstream tag — Go is installed temporarily and removed after.
 
-ECR_IMAGE="registry.k8s.io/provider-aws/ecr-credential-provider:${ECR_CRED_VERSION}"
+GO_VERSION="go1.23.8"
+GOARCH_VALUE="$(dpkg --print-architecture)"   # arm64 or amd64
+GO_TARBALL="/tmp/${GO_VERSION}.linux-${GOARCH_VALUE}.tar.gz"
 
-# Pull image using ctr (containerd CLI, already installed — no docker needed)
-sudo ctr image pull "${ECR_IMAGE}"
+wget -q "https://go.dev/dl/${GO_VERSION}.linux-${GOARCH_VALUE}.tar.gz" -O "${GO_TARBALL}"
+sudo tar -C /usr/local -xzf "${GO_TARBALL}"
+export PATH=$PATH:/usr/local/go/bin
+export GOPATH=/tmp/gopath
+export GOCACHE=/tmp/gocache
 
-# Export the OCI image to a tar, then extract the binary from its layer blobs.
-# The image is FROM scratch so there is no shell; we go directly to the layer tar.
-sudo ctr image export /tmp/ecr-provider.tar "${ECR_IMAGE}"
-mkdir -p /tmp/ecr-extract
-tar -xf /tmp/ecr-provider.tar -C /tmp/ecr-extract
+git clone --depth 1 --branch "${ECR_CRED_VERSION}" \
+    https://github.com/kubernetes/cloud-provider-aws.git /tmp/cloud-provider-aws
 
-BINARY_FOUND=false
-for blob in /tmp/ecr-extract/blobs/sha256/*; do
-  # Layers may be gzip-compressed or plain tar; try both
-  if tar -tzf "$blob" 2>/dev/null | grep -q "^ecr-credential-provider$"; then
-    tar -xzf "$blob" -C /tmp/ecr-extract ecr-credential-provider
-    BINARY_FOUND=true
-    break
-  elif tar -tf "$blob" 2>/dev/null | grep -q "^ecr-credential-provider$"; then
-    tar -xf "$blob" -C /tmp/ecr-extract ecr-credential-provider
-    BINARY_FOUND=true
-    break
-  fi
-done
+cd /tmp/cloud-provider-aws
+CGO_ENABLED=0 GOOS=linux GOARCH="${GOARCH_VALUE}" \
+    /usr/local/go/bin/go build \
+    -ldflags="-s -w" \
+    -o /tmp/ecr-credential-provider \
+    ./cmd/ecr-credential-provider
+cd -
 
-if [ "$BINARY_FOUND" = false ]; then
-  echo "FATAL: ecr-credential-provider binary not found in image layers"
-  exit 1
-fi
+sudo install -m 0755 /tmp/ecr-credential-provider /usr/local/bin/ecr-credential-provider
 
-sudo install -m 0755 /tmp/ecr-extract/ecr-credential-provider /usr/local/bin/ecr-credential-provider
-sudo ctr image rm "${ECR_IMAGE}" 2>/dev/null || true
-rm -rf /tmp/ecr-extract /tmp/ecr-provider.tar
+# Purge everything the build touched — toolchain, source, module cache, build cache, tarball
+sudo rm -rf \
+    /usr/local/go \
+    "${GO_TARBALL}" \
+    /tmp/cloud-provider-aws \
+    /tmp/ecr-credential-provider \
+    /tmp/gopath \
+    /tmp/gocache \
+    /root/.cache/go-build \
+    /root/go \
+    /home/ubuntu/.cache/go-build \
+    /home/ubuntu/go
 
 ecr-credential-provider version 2>/dev/null || ecr-credential-provider --version 2>/dev/null || echo "ecr-credential-provider installed (no version flag)"
 

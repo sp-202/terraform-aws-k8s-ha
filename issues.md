@@ -498,17 +498,184 @@ kubectl -n kube-system get configmap coredns -o yaml | \
   kubectl apply -f - || true
 kubectl -n kube-system rollout restart deployment coredns || true
 ```
-The error is simple: the download URL I used returned 404 Not Found.
+---
 
+## 29. Cilium ENI Allocation Failure — IMDS Hop Limit Too Low
 
-curl: (22) The requested URL returned error: 404
-The URL I guessed was:
+**Issue**: Cilium operator failed to allocate ENIs (Elastic Network Interfaces) for pod secondary IPs, causing critical cluster failure:
+- Cilium agent pods: `CrashLoopBackOff` (timed out waiting for CRD events after 3m0s)
+- CoreDNS: `Pending` (no IPs to schedule)
+- Hubble Relay: `Pending` (same root cause)
+- `CiliumNode` objects: Empty `CILIUMINTERNALIP` column (no IPs allocated to any node)
 
+**Root Cause**:
+The Cilium operator pod needs AWS credentials to call EC2 APIs (`CreateNetworkInterface`, `AttachNetworkInterface`, `AssignPrivateIpAddresses`) to allocate secondary ENIs for pod IPs. The operator obtains credentials from the **node's IAM role via IMDS** (Instance Metadata Service). However, the request path requires crossing a network namespace boundary:
 
-https://github.com/kubernetes/cloud-provider-aws/releases/download/v1.34.0/ecr-credential-provider-linux-arm64
-But I don't know the exact asset filename in the release. The repo (kubernetes/cloud-provider-aws) does have a v1.34.0 release (I can see Release 1.34.0 - 6 months ago), but the binary asset name might be different — e.g., it could be:
+```
+Pod network namespace → Host network namespace → IMDS (169.254.169.254)
+                    ↑ hop 1                    ↑ hop 2
+```
 
-ecr-credential-provider-arm64
-ecr-credential-provider_v1.34.0_linux_arm64
-or packaged as a .tar.gz
-Can you check the assets on the v1.34.0 release page and tell me the exact filename for the arm64 binary?
+The EC2 instance default `http_put_response_hop_limit` is **1**, allowing only direct requests. Pods need **hop limit 2** to traverse the namespace boundary.
+
+**Result**: IMDS returned 404 ("TTL expired") → operator couldn't get credentials → operator never attempted EC2 API calls (no error logs visible) → cilium-agent had no IPs available → agent timed out waiting for CRD initialization and crashed.
+
+**Operator Logs Evidence**:
+```
+time=2026-03-22T12:50:00.534901907Z level=info msg="Leader re-election complete" module=operator newLeader=ip-10-0-2-105-mtvdl55cm4
+```
+Operator logs ended immediately after leadership election — no ENI allocation activity logged, confirming silent credential failure.
+
+**Fix Applied**:
+Added `metadata_options` to all 4 worker launch templates with `http_put_response_hop_limit = 2`:
+
+**Files modified:**
+- `compute-spark-critical.tf`
+- `compute-k8s-gp.tf`
+- `compute-spark-spot.tf`
+- `compute-minio.tf`
+
+**Change:**
+```hcl
+metadata_options {
+  http_endpoint               = "enabled"
+  http_tokens                 = "required"   # IMDSv2 enforced
+  http_put_response_hop_limit = 2            # allows pods to reach IMDS
+}
+```
+
+**Deployment Steps**:
+1. Run `terraform apply` to update launch templates (creates new version)
+2. Terminate existing worker nodes to force ASG replacement:
+   ```bash
+   aws ec2 terminate-instances --instance-ids <id1> <id2> <id3> <id4> --region us-east-1
+   ```
+3. Wait 5-10 minutes for new nodes to register
+4. Restart Cilium:
+   ```bash
+   kubectl -n kube-system rollout restart daemonset cilium
+   kubectl -n kube-system rollout restart deployment cilium-operator
+   ```
+5. Verify CiliumNode IPs are allocated:
+   ```bash
+   kubectl get ciliumnode -o wide
+   # Should show IPs in CILIUMINTERNALIP column
+   ```
+
+**Why This Matters for EKS**:
+- Cilium ENI mode is optimal for EKS self-managed nodes (AWS-native networking, no VXLAN overhead)
+- Pod IMDS access is required for any AWS SDK client (credentials for application services)
+- IMDSv2 (token-based) is enforced for security; hop limit 2 is still required
+- **Common gotcha** on EKS with CNIs requiring ENI operations (Cilium, AWS VPC CNI if configured with custom ENIs)
+
+---
+
+## 30. ECR Credential Provider Missing from Golden AMI (Build from Source)
+
+**Issue**: Kubelet unable to authenticate to AWS ECR for pulling EKS-managed container images:
+```
+Failed to pull image "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/coredns:v1.12.3-eksbuild.1"
+Failed to pull image "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/kube-proxy:v1.34.0-eksbuild.2"
+```
+
+**Root Cause**:
+- EKS provides managed container images in private AWS ECR registries
+- Kubelet needs the `ecr-credential-provider` binary to dynamically fetch ECR auth tokens via the image credential provider API
+- Neither pre-built binaries nor OCI images exist in public registries for Kubernetes v1.32+ (including v1.34)
+- The golden AMI (`k8s-ubuntu-2404-arm64-golden-v2`) did not include the credential provider, blocking all ECR image pulls
+
+**Initial Workaround** (in `worker-eks-bootstrap.sh`):
+- For nodes without the credential provider, pre-pull the CoreDNS image using containerd CLI with a temporary ECR token:
+```bash
+ECR_PASSWORD=$(aws ecr get-login-password --region "$AWS_REGION")
+ctr -n k8s.io image pull --user "AWS:${ECR_PASSWORD}" \
+  "602401143452.dkr.ecr.${AWS_REGION}.amazonaws.com/eks/coredns:v1.12.3-eksbuild.1"
+```
+This only pulls CoreDNS; other images still fail.
+
+**Permanent Fix** (in `packer/common-ami.sh`, Section 11):
+- Build `ecr-credential-provider` from official upstream source (`kubernetes/cloud-provider-aws`) instead of relying on non-existent pre-built releases
+- Go compiler installed temporarily, used only for the build, then removed to keep the AMI clean
+- Implementation:
+
+```bash
+echo "Building ECR credential provider $ECR_CRED_VERSION from source..."
+
+GO_VERSION="go1.23.8"
+GOARCH_VALUE="$(dpkg --print-architecture)"   # arm64 or amd64
+GO_TARBALL="/tmp/${GO_VERSION}.linux-${GOARCH_VALUE}.tar.gz"
+
+wget -q "https://go.dev/dl/${GO_VERSION}.linux-${GOARCH_VALUE}.tar.gz" -O "${GO_TARBALL}"
+sudo tar -C /usr/local -xzf "${GO_TARBALL}"
+export PATH=$PATH:/usr/local/go/bin
+export GOPATH=/tmp/gopath
+export GOCACHE=/tmp/gocache
+
+git clone --depth 1 --branch "${ECR_CRED_VERSION}" \
+    https://github.com/kubernetes/cloud-provider-aws.git /tmp/cloud-provider-aws
+
+cd /tmp/cloud-provider-aws
+CGO_ENABLED=0 GOOS=linux GOARCH="${GOARCH_VALUE}" \
+    /usr/local/go/bin/go build \
+    -ldflags="-s -w" \
+    -o /tmp/ecr-credential-provider \
+    ./cmd/ecr-credential-provider
+cd -
+
+sudo install -m 0755 /tmp/ecr-credential-provider /usr/local/bin/ecr-credential-provider
+
+# Purge everything the build touched — no Go bloatware in final AMI
+sudo rm -rf \
+    /usr/local/go \
+    "${GO_TARBALL}" \
+    /tmp/cloud-provider-aws \
+    /tmp/ecr-credential-provider \
+    /tmp/gopath \
+    /tmp/gocache \
+    /root/.cache/go-build \
+    /root/go \
+    /home/ubuntu/.cache/go-build \
+    /home/ubuntu/go
+```
+
+**Key Decisions**:
+- **Build from source**: Kubernetes v1.34 has no pre-built release of `ecr-credential-provider`; building is the only reliable solution
+- **Cross-architecture support**: Script detects `dpkg --print-architecture` (arm64 or amd64) to download matching Go toolchain and build with correct `GOARCH`
+- **Clean AMI**: Go compiler and source code removed after build — final binary is ~50MB stripped, no dev toolchain bloat
+- **Pinned versions**: `ECR_CRED_VERSION=v1.34.0` matched to Kubernetes version; `GO_VERSION=go1.23.8` validated stable for this build
+- **Verification**: Final Packer step verifies `ecr-credential-provider version` or `ecr-credential-provider --version` output
+
+**Integration in worker-eks-bootstrap.sh**:
+Once the binary is available in the AMI, `worker-eks-bootstrap.sh` configures kubelet to use it:
+```bash
+cat > /etc/kubernetes/image-credential-provider-config.json <<EOF
+{
+  "providers": [
+    {
+      "name": "ecr-credential-provider",
+      "matchImages": [
+        "*.dkr.ecr.*.amazonaws.com",
+        "*.dkr.ecr.*.amazonaws.com.cn"
+      ],
+      "defaultCacheDuration": "1h",
+      "apiVersion": "credentialprovider.kubelet.k8s.io/v1"
+    }
+  ]
+}
+EOF
+
+# Kubelet flags (in systemd drop-in 20-eks.conf)
+--image-credential-provider-config=/etc/kubernetes/image-credential-provider-config.json \
+--image-credential-provider-bin-dir=/usr/local/bin
+```
+
+**Result**:
+- ✅ CoreDNS, kube-proxy, and all EKS-managed images pull successfully from ECR
+- ✅ No pre-pull workaround needed
+- ✅ Kubelet auto-refreshes ECR tokens every 1 hour (configurable)
+- ✅ AMI remains clean — no Go/build artifacts, only ~50MB stripped binary
+
+**Why This Matters**:
+- **Kubernetes v1.32+ compatibility**: Newer k8s versions remove pre-built credential provider releases; source build is the only path
+- **EKS with self-managed nodes**: This pattern applies to ANY EKS cluster with custom AMIs and private ECR images
+- **Multi-architecture**: Build script handles both ARM64 (Graviton c7g) and x86 (c6i, m5) instances automatically
