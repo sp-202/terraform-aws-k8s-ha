@@ -17,9 +17,6 @@ local_dev="$(ip -j route get 8.8.8.8 | jq -r '.[0].dev')"
 
 sudo ip route replace local $local_ip dev $local_dev table local proto kernel scope host src $local_ip
 
-cat > /etc/default/kubelet << EOF
-KUBELET_EXTRA_ARGS=--node-ip=$local_ip --system-reserved=cpu=500m,memory=512Mi --kube-reserved=cpu=500m,memory=512Mi
-EOF
 
 echo "Looking for available local NVMe instance store disks..."
 

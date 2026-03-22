@@ -9,7 +9,7 @@ export DEBIAN_FRONTEND=noninteractive
 KUBERNETES_VERSION="${KUBERNETES_VERSION:-v1.34}"
 KUBERNETES_INSTALL_VERSION="1.34.4-1.1"
 CRICTL_VERSION="v1.34.0"        # match k8s version
-CILIUM_CLI_VERSION="v0.18.3"    # pinned — compatible with Cilium 1.16.5
+CILIUM_CLI_VERSION="v0.18.3"    # pinned — compatible with Cilium 1.19.1
 HELM_VERSION="v3.16.4"          # pinned stable
 ECR_CRED_VERSION="v1.34.0"     # ecr-credential-provider — match k8s version
 KERNEL_VERSION="6.8.0-1021-aws" # pinned — validated with Cilium 1.16.5 on ARM64
@@ -119,9 +119,6 @@ EOF
 
 sudo sysctl --system
 
-# ============================================================
-# 6. Containerd Runtime
-# ============================================================
 sudo install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
     sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
@@ -162,9 +159,6 @@ sudo sed -i 's|sandbox_image = ".*"|sandbox_image = "registry.k8s.io/pause:3.10"
 sudo systemctl enable containerd --now
 sudo systemctl is-active containerd
 
-# ============================================================
-# 7. Kubernetes Binaries
-# ============================================================
 curl -fsSL https://pkgs.k8s.io/core:/stable:/${KUBERNETES_VERSION}/deb/Release.key | \
     sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
 
@@ -179,8 +173,6 @@ sudo apt-get install -y \
     kubeadm="$KUBERNETES_INSTALL_VERSION"
 sudo apt-mark hold kubelet kubeadm kubectl
 
-# Placeholder kubelet config — overwritten at boot by common-runtime.sh
-# Prevents kubelet starting with wrong node-ip before runtime script runs
 cat | sudo tee /etc/default/kubelet << 'EOF'
 # Populated at boot by common-runtime.sh
 KUBELET_EXTRA_ARGS=--node-ip=127.0.0.1
@@ -188,9 +180,6 @@ EOF
 
 sudo systemctl enable kubelet
 
-# ============================================================
-# 8. Crictl — pinned to match k8s version
-# ============================================================
 ARCH="$(dpkg --print-architecture)"
 case "$ARCH" in
   amd64) CRICTL_ARCH="amd64" ;;
@@ -215,9 +204,6 @@ timeout: 10
 debug: false
 EOF
 
-# ============================================================
-# 9. Cilium CLI — pinned version
-# ============================================================
 echo "Installing Cilium CLI $CILIUM_CLI_VERSION..."
 CLI_ARCH="amd64"
 if [ "$(uname -m)" = "aarch64" ]; then CLI_ARCH="arm64"; fi
@@ -252,20 +238,41 @@ rm -rf helm.tar.gz "linux-${CLI_ARCH}/"
 
 helm version
 
-# ============================================================
-# 11. ECR Credential Provider — lets kubelet pull from private ECR
-# Without this, kubelet cannot auth to ECR for EKS-managed images
-# (CoreDNS, kube-proxy, etc.) and pods get stuck in ErrImagePull.
-# ============================================================
 echo "Installing ECR credential provider $ECR_CRED_VERSION..."
-CLI_ARCH="amd64"
-if [ "$(uname -m)" = "aarch64" ]; then CLI_ARCH="arm64"; fi
 
-curl -fsSL \
-    "https://github.com/kubernetes/cloud-provider-aws/releases/download/$ECR_CRED_VERSION/ecr-credential-provider-linux-${CLI_ARCH}" \
-    -o ecr-credential-provider
-sudo install -m 0755 ecr-credential-provider /usr/local/bin/ecr-credential-provider
-rm -f ecr-credential-provider
+ECR_IMAGE="registry.k8s.io/provider-aws/ecr-credential-provider:${ECR_CRED_VERSION}"
+
+# Pull image using ctr (containerd CLI, already installed — no docker needed)
+sudo ctr image pull "${ECR_IMAGE}"
+
+# Export the OCI image to a tar, then extract the binary from its layer blobs.
+# The image is FROM scratch so there is no shell; we go directly to the layer tar.
+sudo ctr image export /tmp/ecr-provider.tar "${ECR_IMAGE}"
+mkdir -p /tmp/ecr-extract
+tar -xf /tmp/ecr-provider.tar -C /tmp/ecr-extract
+
+BINARY_FOUND=false
+for blob in /tmp/ecr-extract/blobs/sha256/*; do
+  # Layers may be gzip-compressed or plain tar; try both
+  if tar -tzf "$blob" 2>/dev/null | grep -q "^ecr-credential-provider$"; then
+    tar -xzf "$blob" -C /tmp/ecr-extract ecr-credential-provider
+    BINARY_FOUND=true
+    break
+  elif tar -tf "$blob" 2>/dev/null | grep -q "^ecr-credential-provider$"; then
+    tar -xf "$blob" -C /tmp/ecr-extract ecr-credential-provider
+    BINARY_FOUND=true
+    break
+  fi
+done
+
+if [ "$BINARY_FOUND" = false ]; then
+  echo "FATAL: ecr-credential-provider binary not found in image layers"
+  exit 1
+fi
+
+sudo install -m 0755 /tmp/ecr-extract/ecr-credential-provider /usr/local/bin/ecr-credential-provider
+sudo ctr image rm "${ECR_IMAGE}" 2>/dev/null || true
+rm -rf /tmp/ecr-extract /tmp/ecr-provider.tar
 
 ecr-credential-provider version 2>/dev/null || ecr-credential-provider --version 2>/dev/null || echo "ecr-credential-provider installed (no version flag)"
 

@@ -48,29 +48,10 @@ done
 kubectl cluster-info
 
 # -------------------------------------------------------
-# Step 2 — Authorise worker nodes (aws-auth ConfigMap)
-# Workers use the node IAM role — EKS must map it to system:bootstrappers
+# Step 2 — Node auth is handled by aws_eks_access_entry in Terraform
+# (type = "EC2_LINUX" automatically grants system:nodes to the node IAM role)
+# No aws-auth ConfigMap patching needed.
 # -------------------------------------------------------
-echo "==> Patching aws-auth ConfigMap to allow self-managed nodes to register..."
-
-NODE_ROLE_ARN=$(aws iam get-role \
-  --role-name "${CLUSTER_NAME}-node-role" \
-  --query 'Role.Arn' --output text)
-
-kubectl apply -f - <<EOF
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: aws-auth
-  namespace: kube-system
-data:
-  mapRoles: |
-    - rolearn: ${NODE_ROLE_ARN}
-      username: system:node:{{EC2PrivateDNSName}}
-      groups:
-        - system:bootstrappers
-        - system:nodes
-EOF
 
 # -------------------------------------------------------
 # Step 3 — REMOVE aws-node (VPC CNI) BEFORE installing Cilium

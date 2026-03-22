@@ -55,7 +55,7 @@ source "amazon-ebs" "k8s_node" {
     Environment       = "production"
     CreatedBy         = "packer"
     KubernetesVersion = "1.34"
-    CiliumVersion     = "1.16.5"
+    CiliumVersion     = "1.19.1"
   }
 }
 
