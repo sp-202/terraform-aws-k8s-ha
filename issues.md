@@ -679,3 +679,81 @@ EOF
 - **Kubernetes v1.32+ compatibility**: Newer k8s versions remove pre-built credential provider releases; source build is the only path
 - **EKS with self-managed nodes**: This pattern applies to ANY EKS cluster with custom AMIs and private ECR images
 - **Multi-architecture**: Build script handles both ARM64 (Graviton c7g) and x86 (c6i, m5) instances automatically
+---
+
+## Issue: Cilium Cross-Node Endpoint Health Check Failure
+
+**Status**: ONGOING (2026-03-23)
+
+**Symptom**:
+- `cilium-health status` shows only 1/4 nodes reachable
+- Node health check (TCP 4240 on 10.0.2.x) partially working: 1/4 reachable
+- Endpoint health check (TCP 4240 on 10.0.4.x pod IPs) completely broken: 0/1 reachable on all remote nodes
+- Local node endpoint 1/1 reachable (node can reach its own pods)
+- Health endpoints detected on all 4 nodes: 10.0.4.14, 10.0.4.21, 10.0.4.186, 10.0.4.68
+
+**Evidence**:
+- Cilium 1.19.1 installed on all nodes via Helm after kube-proxy deletion
+- All Cilium DaemonSet pods running (no crashes/restarts observed)
+- Secondary ENIs correctly configured in pod subnet (subnet-0f80a77648d2d6820)
+- Security groups identical on primary and secondary ENIs (sg-07eb867966a2233c6 + sg-03393dc121a22a671)
+- Secondary IPs correctly allocated in AWS (15 IPs per node in 10.0.4.0/24)
+- Pod subnet ID in Cilium values updated post-Helm-upgrade: `eni.subnetIDsFilter[0]=subnet-0f80a77648d2d6820`
+
+**Critical Finding**:
+- One health endpoint (10.0.4.186 on cilium-lt27p) vanished during diagnostics
+- `kubectl -n kube-system exec cilium-lt27p -c cilium-agent -- cilium endpoint list | grep health` returned EMPTY
+- Suggests endpoints may be flapping or not stabilizing after Helm upgrade with corrected subnet ID
+
+**Root Cause (Unknown)**:
+Could be any of:
+1. **Pod-level networking issue**: source_dest_check on secondary ENIs not properly disabled, or eBPF/BPF masquerade misconfiguration
+2. **Cilium agent initialization**: Endpoints not fully initialized after Helm upgrade; needs more time to converge
+3. **Subnet ID propagation**: Helm upgrade with new subnet ID not fully propagated to running Cilium agents
+4. **ENI allocation race**: Secondary ENI allocation not synced with endpoint lifecycle
+
+**Next Steps**:
+1. Cross-node endpoint connectivity test (from GP worker via SSM):
+   ```bash
+   curl -s --connect-timeout 3 http://10.0.4.14:4240/hello
+   curl -s --connect-timeout 3 http://10.0.4.21:4240/hello
+   curl -s --connect-timeout 3 http://10.0.4.186:4240/hello
+   curl -s --connect-timeout 3 http://10.0.4.68:4240/hello
+   ```
+   - If timeouts → VPC-level pod networking issue (check source_dest_check, eBPF/BPF masquerade)
+   - If succeeds → Cilium just needs time to stabilize endpoints
+
+2. Check Cilium pod stability:
+   ```bash
+   kubectl -n kube-system get pods -l k8s-app=cilium
+   kubectl -n kube-system logs cilium-lt27p --tail=20  # Check for errors
+   kubectl -n kube-system logs cilium-operator-... --tail=20
+   ```
+
+3. Force Cilium endpoint update (if time stabilization is the issue):
+   ```bash
+   kubectl -n kube-system rollout restart daemonset/cilium
+   sleep 60
+   cilium-health status
+   ```
+
+**Architecture Context**:
+- 4 worker nodes in private subnet (10.0.2.0/24)
+- Cilium ENI mode: pods get IPs from pod subnet (10.0.4.0/24) via secondary ENI allocation
+- Node-to-pod communication requires:
+  - source_dest_check=false on both primary and secondary ENIs
+  - eBPF/BPF masquerade enabled for packet rewriting
+  - Pod security group (sg-03393dc121a22a671) allows ingress on Cilium health port (4240)
+  - No NACLs blocking 10.0.2.x ↔ 10.0.4.x cross-subnet traffic
+
+**Impact**:
+- Cross-node pod communication likely broken (endpoints unreachable)
+- Cluster DNS, service load balancing, and inter-pod communication degraded
+- Workloads unable to reach endpoints on remote nodes (will stay local or fail)
+
+**Workarounds**:
+- None yet identified; requires root cause diagnosis
+
+**Related Commits**:
+- `fec3795`: Build ECR credential provider from source and fix pod IMDS access for Cilium ENI
+- `b378136`: Replace AWS NAT Gateway with fck-nat cost-optimized instance + post-cluster-bootstrap restructure
