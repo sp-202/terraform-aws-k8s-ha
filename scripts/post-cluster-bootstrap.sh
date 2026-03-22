@@ -115,7 +115,21 @@ aws eks delete-addon \
   --region "$AWS_REGION" 2>/dev/null && echo "vpc-cni addon removed" || echo "vpc-cni addon not present, skipping"
 
 # -------------------------------------------------------
-# Step 4 — Wait for at least one node, then install Cilium
+# Step 4 — Delete kube-proxy BEFORE Cilium (Cilium replaces it)
+#
+# With kubeProxyReplacement=true, kube-proxy must be gone first.
+# Also remove the EKS addon so the addon controller doesn't recreate it.
+# -------------------------------------------------------
+echo "==> Deleting kube-proxy (will be replaced by Cilium kubeProxyReplacement)..."
+kubectl -n kube-system delete daemonset kube-proxy --ignore-not-found
+kubectl -n kube-system delete configmap kube-proxy --ignore-not-found
+aws eks delete-addon \
+  --cluster-name "$CLUSTER_NAME" \
+  --addon-name kube-proxy \
+  --region "$AWS_REGION" 2>/dev/null && echo "kube-proxy addon removed" || echo "kube-proxy addon not present, skipping"
+
+# -------------------------------------------------------
+# Step 5 — Wait for at least one node, then install Cilium
 #
 # Key differences from the old kubeadm setup:
 #   - k8sServiceHost is the EKS endpoint hostname (not master private IP)
@@ -146,6 +160,7 @@ EKS_ENDPOINT=$(aws eks describe-cluster \
 helm repo add cilium https://helm.cilium.io/ 2>/dev/null || helm repo update cilium
 helm repo update
 
+# First attempt — if it fails with timeout (webhook not ready), clean up and retry
 helm upgrade --install cilium cilium/cilium \
   --version 1.19.1 \
   --namespace kube-system \
@@ -165,21 +180,43 @@ helm upgrade --install cilium cilium/cilium \
   --set eni.awsEnableInstanceTypeDetails=true \
   --set eni.updateEC2AdapterLimitViaAPI=true \
   --set eni.awsReleaseExcessIPs=true \
-  --set "eni.subnetIDsFilter[0]=$POD_SUBNET_ID"
+  --set "eni.subnetIDsFilter[0]=$POD_SUBNET_ID" || {
+    echo "==> Cilium install failed. Cleaning up partial release and retrying..."
+    # Delete any Cilium webhooks that block API calls when operator isn't running
+    kubectl delete validatingwebhookconfiguration cilium --ignore-not-found
+    kubectl delete mutatingwebhookconfiguration cilium --ignore-not-found
+    # Purge the failed Helm release so upgrade --install starts fresh
+    helm uninstall cilium -n kube-system 2>/dev/null || true
+    sleep 10
+    echo "==> Retrying Cilium install..."
+    helm upgrade --install cilium cilium/cilium \
+      --version 1.19.1 \
+      --namespace kube-system \
+      --timeout 10m0s \
+      --set ipam.mode=eni \
+      --set eni.enabled=true \
+      --set routingMode=native \
+      --set ipv4NativeRoutingCIDR="10.0.0.0/8" \
+      --set kubeProxyReplacement=true \
+      --set k8sServiceHost="$EKS_ENDPOINT" \
+      --set k8sServicePort=443 \
+      --set socketLB.hostNamespaceOnly=false \
+      --set enableIPv4Masquerade=true \
+      --set bpf.masquerade=true \
+      --set hubble.relay.enabled=true \
+      --set hubble.ui.enabled=true \
+      --set eni.awsEnableInstanceTypeDetails=true \
+      --set eni.updateEC2AdapterLimitViaAPI=true \
+      --set eni.awsReleaseExcessIPs=true \
+      --set "eni.subnetIDsFilter[0]=$POD_SUBNET_ID"
+  }
 
 echo "Waiting for Cilium to initialize..."
 sleep 30
 kubectl -n kube-system rollout status daemonset/cilium --timeout=180s || true
 
 # -------------------------------------------------------
-# Step 4b — Delete kube-proxy (Cilium replaces it)
-# -------------------------------------------------------
-echo "==> Deleting kube-proxy (replaced by Cilium kubeProxyReplacement)..."
-kubectl -n kube-system delete daemonset kube-proxy --ignore-not-found
-kubectl -n kube-system delete configmap kube-proxy --ignore-not-found
-
-# -------------------------------------------------------
-# Step 4c — Fix CoreDNS forward to VPC DNS resolver
+# Step 5b — Fix CoreDNS forward to VPC DNS resolver
 # Nodes run systemd-resolved (127.0.0.53) which forwards to cluster DNS,
 # creating a loop. Forward to VPC DNS (base + 2) instead.
 # -------------------------------------------------------
@@ -190,7 +227,7 @@ kubectl -n kube-system get configmap coredns -o yaml | \
 kubectl -n kube-system rollout restart deployment coredns || true
 
 # -------------------------------------------------------
-# Step 5 — Install AWS Node Termination Handler
+# Step 6 — Install AWS Node Termination Handler
 # -------------------------------------------------------
 echo "==> Installing AWS Node Termination Handler..."
 helm repo add eks https://aws.github.io/eks-charts 2>/dev/null || helm repo update eks
@@ -203,7 +240,7 @@ helm upgrade --install aws-node-termination-handler \
   eks/aws-node-termination-handler
 
 # -------------------------------------------------------
-# Step 6 — Install OpenEBS
+# Step 7 — Install OpenEBS
 # -------------------------------------------------------
 echo "Waiting for I/O to settle before OpenEBS install..."
 sleep 30
@@ -219,7 +256,7 @@ helm upgrade --install openebs openebs/openebs \
   --set engines.local.lvm.enabled=false || true
 
 # -------------------------------------------------------
-# Step 7 — Deploy auto-label DaemonJob (replaces k8s-auto-label.service)
+# Step 8 — Deploy auto-label DaemonJob (replaces k8s-auto-label.service)
 # On EKS we can't run a systemd service on the control plane,
 # so we run a lightweight DaemonSet that labels nodes by name pattern.
 # -------------------------------------------------------

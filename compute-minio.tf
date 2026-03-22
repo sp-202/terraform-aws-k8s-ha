@@ -88,5 +88,5 @@ resource "aws_autoscaling_group" "minio_worker" {
     value               = "owned"
     propagate_at_launch = true
   }
-  depends_on = [aws_eks_cluster.main, aws_eks_access_entry.nodes]
+  depends_on = [aws_eks_cluster.main, aws_eks_access_entry.nodes, aws_route_table_association.private]
 }
