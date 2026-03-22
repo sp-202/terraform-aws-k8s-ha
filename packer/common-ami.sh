@@ -11,6 +11,7 @@ KUBERNETES_INSTALL_VERSION="1.34.4-1.1"
 CRICTL_VERSION="v1.34.0"        # match k8s version
 CILIUM_CLI_VERSION="v0.18.3"    # pinned — compatible with Cilium 1.16.5
 HELM_VERSION="v3.16.4"          # pinned stable
+ECR_CRED_VERSION="v1.34.0"     # ecr-credential-provider — match k8s version
 KERNEL_VERSION="6.8.0-1021-aws" # pinned — validated with Cilium 1.16.5 on ARM64
 
 # ============================================================
@@ -252,7 +253,24 @@ rm -rf helm.tar.gz "linux-${CLI_ARCH}/"
 helm version
 
 # ============================================================
-# 11. Verify all tools installed correctly
+# 11. ECR Credential Provider — lets kubelet pull from private ECR
+# Without this, kubelet cannot auth to ECR for EKS-managed images
+# (CoreDNS, kube-proxy, etc.) and pods get stuck in ErrImagePull.
+# ============================================================
+echo "Installing ECR credential provider $ECR_CRED_VERSION..."
+CLI_ARCH="amd64"
+if [ "$(uname -m)" = "aarch64" ]; then CLI_ARCH="arm64"; fi
+
+curl -fsSL \
+    "https://github.com/kubernetes/cloud-provider-aws/releases/download/$ECR_CRED_VERSION/ecr-credential-provider-linux-${CLI_ARCH}" \
+    -o ecr-credential-provider
+sudo install -m 0755 ecr-credential-provider /usr/local/bin/ecr-credential-provider
+rm -f ecr-credential-provider
+
+ecr-credential-provider version 2>/dev/null || ecr-credential-provider --version 2>/dev/null || echo "ecr-credential-provider installed (no version flag)"
+
+# ============================================================
+# 12. Verify all tools installed correctly
 # Fail fast here so bad AMI is never snapshotted
 # ============================================================
 echo "=== Verifying installations ==="
@@ -264,6 +282,7 @@ crictl --version
 cilium version --client
 helm version
 nvme --version
+ecr-credential-provider version 2>/dev/null || echo "ecr-credential-provider installed"
 aws --version 2>/dev/null || echo "AWS CLI — installed separately in Packer"
 
 echo "=== common-ami.sh complete ==="
