@@ -1,6 +1,16 @@
-# fck-nat — single t4g.nano instance replacing AWS NAT Gateway (~$3/mo vs ~$32/mo)
+# fck-nat — single t4g.micro instance replacing AWS NAT Gateway (~$3/mo vs ~$32/mo)
 # The fck-nat AMI (Amazon Linux 2023) ships with ip_forward + iptables MASQUERADE
 # pre-configured. No user-data needed — it works out of the box.
+#
+# Production design notes:
+# - source_dest_check=false is set on the instance so AWS does not drop forwarded
+#   packets whose source/destination doesn't match the instance's own IPs.
+# - A CloudWatch recovery alarm restarts the instance on underlying host failure.
+#   Recovery preserves the ENI ID and therefore the route table entry stays valid.
+# - The EIP is associated to the instance. On a recovery action AWS preserves the
+#   primary ENI, so the EIP and route table entry remain stable.
+# - Instance replacement via `terraform apply` (e.g. AMI update) will produce a new
+#   primary_network_interface_id. Run `terraform apply` to refresh the route table.
 
 data "aws_ami" "fck_nat" {
   most_recent = true
@@ -76,4 +86,22 @@ resource "aws_instance" "nat" {
 resource "aws_eip_association" "nat" {
   instance_id   = aws_instance.nat.id
   allocation_id = aws_eip.nat.id
+}
+
+# CloudWatch recovery alarm — automatically recovers the instance on underlying
+# host failure. EC2 recovery preserves the primary ENI ID, so the route table
+# entry (which references primary_network_interface_id) stays valid with no
+# manual intervention.
+resource "aws_cloudwatch_metric_alarm" "nat_recovery" {
+  alarm_name          = "${var.cluster_name}-nat-recovery"
+  namespace           = "AWS/EC2"
+  metric_name         = "StatusCheckFailed_System"
+  dimensions          = { InstanceId = aws_instance.nat.id }
+  period              = 60
+  evaluation_periods  = 2
+  statistic           = "Maximum"
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 0
+  alarm_actions       = ["arn:aws:automate:${var.aws_region}:ec2:recover"]
+  alarm_description   = "Recover fck-nat on host failure (preserves primary ENI and route table entry)"
 }

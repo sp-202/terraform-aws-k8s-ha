@@ -180,6 +180,7 @@ helm upgrade --install cilium cilium/cilium \
   --set eni.awsEnableInstanceTypeDetails=true \
   --set eni.updateEC2AdapterLimitViaAPI=true \
   --set eni.awsReleaseExcessIPs=true \
+  --set eni.disableSourceDestCheck=true \
   --set "eni.subnetIDsFilter[0]=$POD_SUBNET_ID" || {
     echo "==> Cilium install failed. Cleaning up partial release and retrying..."
     # Delete any Cilium webhooks that block API calls when operator isn't running
@@ -208,6 +209,7 @@ helm upgrade --install cilium cilium/cilium \
       --set eni.awsEnableInstanceTypeDetails=true \
       --set eni.updateEC2AdapterLimitViaAPI=true \
       --set eni.awsReleaseExcessIPs=true \
+      --set eni.disableSourceDestCheck=true \
       --set "eni.subnetIDsFilter[0]=$POD_SUBNET_ID"
   }
 

@@ -26,7 +26,7 @@ resource "aws_launch_template" "k8s_worker_node" {
     http_put_response_hop_limit = 2
   }
 
-  user_data = base64encode(<<-BASH
+  user_data = base64gzip(<<-BASH
               #!/bin/bash
               set -ex
               exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
