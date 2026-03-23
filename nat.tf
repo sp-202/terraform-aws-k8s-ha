@@ -68,7 +68,7 @@ resource "aws_eip" "nat" {
 
 resource "aws_instance" "nat" {
   ami                         = data.aws_ami.fck_nat.id
-  instance_type               = "t4g.micro"
+  instance_type               = "t4g.small"
   subnet_id                   = aws_subnet.public.id
   vpc_security_group_ids      = [aws_security_group.nat.id]
   source_dest_check           = false

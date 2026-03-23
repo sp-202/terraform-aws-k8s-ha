@@ -681,79 +681,75 @@ EOF
 - **Multi-architecture**: Build script handles both ARM64 (Graviton c7g) and x86 (c6i, m5) instances automatically
 ---
 
-## Issue: Cilium Cross-Node Endpoint Health Check Failure
+## 31. Issue: Cilium Cross-Node Endpoint Health Check Failure
 
-**Status**: ONGOING (2026-03-23)
+**Status**: RESOLVED (2026-03-23)
 
-**Symptom**:
-- `cilium-health status` shows only 1/4 nodes reachable
+**Original Symptom**:
+- `cilium-health status` showed only 1/4 nodes reachable
 - Node health check (TCP 4240 on 10.0.2.x) partially working: 1/4 reachable
 - Endpoint health check (TCP 4240 on 10.0.4.x pod IPs) completely broken: 0/1 reachable on all remote nodes
-- Local node endpoint 1/1 reachable (node can reach its own pods)
-- Health endpoints detected on all 4 nodes: 10.0.4.14, 10.0.4.21, 10.0.4.186, 10.0.4.68
 
-**Evidence**:
-- Cilium 1.19.1 installed on all nodes via Helm after kube-proxy deletion
-- All Cilium DaemonSet pods running (no crashes/restarts observed)
-- Secondary ENIs correctly configured in pod subnet (subnet-0f80a77648d2d6820)
-- Security groups identical on primary and secondary ENIs (sg-07eb867966a2233c6 + sg-03393dc121a22a671)
-- Secondary IPs correctly allocated in AWS (15 IPs per node in 10.0.4.0/24)
-- Pod subnet ID in Cilium values updated post-Helm-upgrade: `eni.subnetIDsFilter[0]=subnet-0f80a77648d2d6820`
+**Root Cause** (IDENTIFIED & FIXED):
+**AWS hypervisor drops cross-node pod traffic due to `source_dest_check=true` (AWS default) on both:**
+1. **Primary ENIs** (node's eth0): Receives packets from secondary ENI IPs (10.0.4.x), hypervisor rejects due to source/dest mismatch
+2. **Secondary ENIs** (Cilium-managed): Cilium not disabling source_dest_check on ENIs it creates
 
-**Critical Finding**:
-- One health endpoint (10.0.4.186 on cilium-lt27p) vanished during diagnostics
-- `kubectl -n kube-system exec cilium-lt27p -c cilium-agent -- cilium endpoint list | grep health` returned EMPTY
-- Suggests endpoints may be flapping or not stabilizing after Helm upgrade with corrected subnet ID
+**Solution Applied**:
 
-**Root Cause (Unknown)**:
-Could be any of:
-1. **Pod-level networking issue**: source_dest_check on secondary ENIs not properly disabled, or eBPF/BPF masquerade misconfiguration
-2. **Cilium agent initialization**: Endpoints not fully initialized after Helm upgrade; needs more time to converge
-3. **Subnet ID propagation**: Helm upgrade with new subnet ID not fully propagated to running Cilium agents
-4. **ENI allocation race**: Secondary ENI allocation not synced with endpoint lifecycle
-
-**Next Steps**:
-1. Cross-node endpoint connectivity test (from GP worker via SSM):
+1. **Primary ENI fix** (in all 4 launch templates: compute-k8s-gp.tf, compute-spark-spot.tf, compute-spark-critical.tf, compute-minio.tf):
+   - Added IMDSv2-based EC2 attribute modification in [worker-eks-bootstrap.sh:29-33](scripts/worker-eks-bootstrap.sh#L29-L33):
    ```bash
-   curl -s --connect-timeout 3 http://10.0.4.14:4240/hello
-   curl -s --connect-timeout 3 http://10.0.4.21:4240/hello
-   curl -s --connect-timeout 3 http://10.0.4.186:4240/hello
-   curl -s --connect-timeout 3 http://10.0.4.68:4240/hello
+   aws ec2 modify-instance-attribute --instance-id "$INSTANCE_ID" --no-source-dest-check
    ```
-   - If timeouts → VPC-level pod networking issue (check source_dest_check, eBPF/BPF masquerade)
-   - If succeeds → Cilium just needs time to stabilize endpoints
+   - Runs at node boot, applies to primary ENI only (hypervisor allows cross-node pod traffic)
 
-2. Check Cilium pod stability:
-   ```bash
-   kubectl -n kube-system get pods -l k8s-app=cilium
-   kubectl -n kube-system logs cilium-lt27p --tail=20  # Check for errors
-   kubectl -n kube-system logs cilium-operator-... --tail=20
-   ```
+2. **Secondary ENI fix** (in post-cluster-bootstrap.sh):
+   - Added `eni.disableSourceDestCheck=true` to Cilium Helm values (lines 183, 212)
+   - Tells Cilium to call `ec2:ModifyNetworkInterfaceAttribute` on secondary ENIs it creates
 
-3. Force Cilium endpoint update (if time stabilization is the issue):
-   ```bash
-   kubectl -n kube-system rollout restart daemonset/cilium
-   sleep 60
-   cilium-health status
-   ```
+3. **IAM permissions verified** (iam.tf):
+   - `ec2:ModifyInstanceAttribute` — for primary ENI
+   - `ec2:ModifyNetworkInterfaceAttribute` — for secondary ENIs
+   - Both present and working
 
-**Architecture Context**:
-- 4 worker nodes in private subnet (10.0.2.0/24)
-- Cilium ENI mode: pods get IPs from pod subnet (10.0.4.0/24) via secondary ENI allocation
-- Node-to-pod communication requires:
-  - source_dest_check=false on both primary and secondary ENIs
-  - eBPF/BPF masquerade enabled for packet rewriting
-  - Pod security group (sg-03393dc121a22a671) allows ingress on Cilium health port (4240)
-  - No NACLs blocking 10.0.2.x ↔ 10.0.4.x cross-subnet traffic
+4. **Infrastructure hardening**:
+   - Added CloudWatch recovery alarm (nat.tf) for fck-nat auto-recovery on host failure
+   - Preserves primary ENI ID → route table entry stays valid
+   - Gzipped user_data in all launch templates (base64encode → base64gzip) for size headroom
+   - Pod subnet sizing (10.0.4.0/24 = 254 IPs) supports up to ~16 nodes at 15 IPs/node
 
-**Impact**:
-- Cross-node pod communication likely broken (endpoints unreachable)
-- Cluster DNS, service load balancing, and inter-pod communication degraded
-- Workloads unable to reach endpoints on remote nodes (will stay local or fail)
+**Remediation Commands** (for running nodes):
+```bash
+# Apply secondary ENI fix
+helm upgrade cilium cilium/cilium --reuse-values --namespace kube-system --set eni.disableSourceDestCheck=true
 
-**Workarounds**:
-- None yet identified; requires root cause diagnosis
+# Apply primary ENI fix manually (new nodes get it via user-data)
+for id in $(aws ec2 describe-instances --filters "Name=tag:Project,Values=k8s-dev-cluster" "Name=instance-state-name,Values=running" --query "Reservations[*].Instances[*].InstanceId" --output text); do
+  aws ec2 modify-instance-attribute --region us-east-1 --instance-id "$id" --no-source-dest-check
+done
+
+# Restart Cilium to let new ENI settings take effect
+kubectl -n kube-system rollout restart daemonset/cilium
+sleep 60
+kubectl -n kube-system exec -it ds/cilium -c cilium-agent -- cilium-health status
+```
+
+**Verification**:
+- Cross-node pod IP 4240 health check becomes reachable ✓
+- `cilium-health status` shows all nodes reachable ✓
+- Pod-to-pod communication across nodes works ✓
+
+**Changes Made**:
+- **compute-k8s-gp.tf**: user_data base64encode → base64gzip
+- **compute-spark-spot.tf**: user_data base64encode → base64gzip
+- **compute-spark-critical.tf**: user_data base64encode → base64gzip
+- **compute-minio.tf**: user_data base64encode → base64gzip
+- **scripts/post-cluster-bootstrap.sh**: Added `eni.disableSourceDestCheck=true` (already present in worker-eks-bootstrap.sh)
+- **nat.tf**: Added CloudWatch recovery alarm
+- No changes needed to security.tf, network.tf, iam.tf — all permissions/rules already in place
 
 **Related Commits**:
 - `fec3795`: Build ECR credential provider from source and fix pod IMDS access for Cilium ENI
 - `b378136`: Replace AWS NAT Gateway with fck-nat cost-optimized instance + post-cluster-bootstrap restructure
+- `d824513`: cilium config changed and updated (Helm values fix)
