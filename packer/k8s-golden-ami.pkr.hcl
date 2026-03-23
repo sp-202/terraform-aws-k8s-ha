@@ -55,7 +55,7 @@ source "amazon-ebs" "k8s_node" {
     Environment       = "production"
     CreatedBy         = "packer"
     KubernetesVersion = "1.34"
-    CiliumVersion     = "1.16.5"
+    CiliumVersion     = "1.19.1"
   }
 }
 
@@ -105,39 +105,81 @@ build {
   }
 
   # Step 5 — MUST BE LAST: Wipe all instance-specific state
-  # This makes the AMI fully generic — works on ANY ARM64 instance type
-  # Cilium will detect correct instance type from live IMDS at boot time
+  # This makes the AMI fully generic — works on ANY ARM64 instance type.
+  # Every item below is state produced by the builder EC2 instance that must
+  # NOT be frozen into the snapshot, otherwise new instances boot with stale
+  # identity (wrong instance-id, IP, MAC, hostname, entropy, etc.)
   provisioner "shell" {
     inline = [
       "echo 'Wiping instance-specific state for generic AMI...'",
 
-      # Stop services that may have cached instance metadata
-      "sudo systemctl stop containerd || true",
+      # ── Services ────────────────────────────────────────────────────────────
+      # Stop everything that holds open state before we wipe it
+      "sudo systemctl stop containerd kubelet || true",
 
-      # Cloud-init clean — forces full re-run on next boot with correct instance identity
+      # ── containerd state ────────────────────────────────────────────────────
+      # containerd ran during the build (--now flag). Its content store and
+      # snapshotter track the builder's on-disk state. New instances must start
+      # fresh — containerd re-initialises from an empty dir on first start.
+      "sudo rm -rf /var/lib/containerd/",
+
+      # ── Cloud-init ──────────────────────────────────────────────────────────
+      # Forces full re-run on next boot so the new instance picks up its own
+      # instance-id, hostname, SSH keys, and user-data from IMDS.
       "sudo cloud-init clean --logs --seed",
-      "sudo rm -rf /var/lib/cloud/instances/",
-      "sudo rm -rf /var/lib/cloud/data/",
+      "sudo rm -rf /var/lib/cloud/",
       "sudo rm -f /var/log/cloud-init.log /var/log/cloud-init-output.log",
 
-      # Reset machine-id — each instance gets a unique one on first boot
+      # ── Machine identity ────────────────────────────────────────────────────
+      # machine-id must be unique per instance. Truncating (not deleting)
+      # causes systemd to regenerate it on first boot.
       "sudo truncate -s 0 /etc/machine-id",
       "sudo rm -f /var/lib/dbus/machine-id",
 
-      # Remove SSH host keys — regenerated on first boot per instance
+      # ── Hostname ────────────────────────────────────────────────────────────
+      # EC2 sets the builder hostname to ip-10-x-x-x.region.compute.internal.
+      # Reset to a neutral placeholder; cloud-init overwrites it on first boot.
+      "echo 'localhost' | sudo tee /etc/hostname",
+      "sudo sed -i '/^127\\.0\\.0\\.1/c\\127.0.0.1 localhost' /etc/hosts",
+      "sudo sed -i '/ip-[0-9]/d' /etc/hosts",
+
+      # ── SSH host keys ───────────────────────────────────────────────────────
+      # Host keys are per-machine secrets. cloud-init regenerates them on boot.
       "sudo rm -f /etc/ssh/ssh_host_*",
 
-      # Clean apt cache and package lists
+      # ── Network state ───────────────────────────────────────────────────────
+      # DHCP leases bind the builder's MAC address and IP — useless on a
+      # different instance type that gets a different ENI.
+      "sudo rm -f /var/lib/dhcp/*.leases 2>/dev/null || true",
+      # NetworkManager caches interface names/MACs from the builder NIC.
+      "sudo rm -rf /var/lib/NetworkManager/ 2>/dev/null || true",
+      # systemd-networkd persisted state (interface leases, etc.)
+      "sudo rm -rf /var/lib/systemd/network/ 2>/dev/null || true",
+
+      # ── Entropy seed ────────────────────────────────────────────────────────
+      # The random seed is derived from the builder's hardware. Each new
+      # instance must generate its own to avoid predictable randomness.
+      "sudo rm -f /var/lib/systemd/random-seed",
+
+      # ── System logs ─────────────────────────────────────────────────────────
+      # Journal contains the builder's instance-id, private IP, and AZ in
+      # every log line. Wipe it so node logs start clean on first boot.
+      "sudo journalctl --flush 2>/dev/null || true",
+      "sudo rm -rf /var/log/journal/",
+      # Truncate (not delete) other logs — some init scripts expect the files
+      "sudo find /var/log -type f ! -name '*.gz' -exec truncate -s 0 {} \\;",
+
+      # ── APT cache ───────────────────────────────────────────────────────────
       "sudo apt-get clean",
       "sudo rm -rf /var/lib/apt/lists/*",
 
-      # Remove any AWS credentials or config cached during build
+      # ── AWS credentials ─────────────────────────────────────────────────────
       "sudo rm -rf /root/.aws /home/ubuntu/.aws",
 
-      # Clean temp files
+      # ── Temp / scratch ──────────────────────────────────────────────────────
       "sudo rm -rf /tmp/* /var/tmp/*",
 
-      # Clean shell history
+      # ── Shell history ───────────────────────────────────────────────────────
       "sudo truncate -s 0 /root/.bash_history || true",
       "truncate -s 0 /home/ubuntu/.bash_history || true",
 

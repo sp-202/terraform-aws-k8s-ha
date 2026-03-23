@@ -41,10 +41,10 @@ variable "ssh_public_key_path" {
   default     = "~/.ssh/id_ed25519.pub"
 }
 
-variable "master_instance_type" {
-  description = "Instance type for the K8s master node"
+variable "eks_version" {
+  description = "Kubernetes version for the EKS control plane"
   type        = string
-  default     = "c7g.2xlarge" # 8 vCPU, 16 GiB RAM
+  default     = "1.34"
 }
 
 variable "worker_instance_type" {
@@ -96,9 +96,15 @@ variable "cluster_name" {
 }
 
 variable "availability_zone" {
-  description = "AV Zone for deployment"
+  description = "Primary AZ for worker nodes and subnets"
   type        = string
   default     = "us-east-1a"
+}
+
+variable "eks_cp_subnet_base_cidr" {
+  description = "Base /20 CIDR carved into per-AZ /24s for EKS control plane registration. No workers run in these subnets."
+  type        = string
+  default     = "10.0.16.0/20"
 }
 
 variable "worker_min" {

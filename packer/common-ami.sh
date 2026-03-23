@@ -9,8 +9,9 @@ export DEBIAN_FRONTEND=noninteractive
 KUBERNETES_VERSION="${KUBERNETES_VERSION:-v1.34}"
 KUBERNETES_INSTALL_VERSION="1.34.4-1.1"
 CRICTL_VERSION="v1.34.0"        # match k8s version
-CILIUM_CLI_VERSION="v0.18.3"    # pinned — compatible with Cilium 1.16.5
+CILIUM_CLI_VERSION="v0.18.3"    # pinned — compatible with Cilium 1.19.1
 HELM_VERSION="v3.16.4"          # pinned stable
+ECR_CRED_VERSION="v1.34.0"     # ecr-credential-provider — match k8s version
 KERNEL_VERSION="6.8.0-1021-aws" # pinned — validated with Cilium 1.16.5 on ARM64
 
 # ============================================================
@@ -55,6 +56,8 @@ sudo apt-get install -y \
     software-properties-common \
     jq \
     unzip \
+    wget \
+    git \
     nvme-cli \
     mdadm \
     iproute2 \
@@ -118,9 +121,6 @@ EOF
 
 sudo sysctl --system
 
-# ============================================================
-# 6. Containerd Runtime
-# ============================================================
 sudo install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
     sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
@@ -161,9 +161,6 @@ sudo sed -i 's|sandbox_image = ".*"|sandbox_image = "registry.k8s.io/pause:3.10"
 sudo systemctl enable containerd --now
 sudo systemctl is-active containerd
 
-# ============================================================
-# 7. Kubernetes Binaries
-# ============================================================
 curl -fsSL https://pkgs.k8s.io/core:/stable:/${KUBERNETES_VERSION}/deb/Release.key | \
     sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
 
@@ -178,8 +175,6 @@ sudo apt-get install -y \
     kubeadm="$KUBERNETES_INSTALL_VERSION"
 sudo apt-mark hold kubelet kubeadm kubectl
 
-# Placeholder kubelet config — overwritten at boot by common-runtime.sh
-# Prevents kubelet starting with wrong node-ip before runtime script runs
 cat | sudo tee /etc/default/kubelet << 'EOF'
 # Populated at boot by common-runtime.sh
 KUBELET_EXTRA_ARGS=--node-ip=127.0.0.1
@@ -187,9 +182,6 @@ EOF
 
 sudo systemctl enable kubelet
 
-# ============================================================
-# 8. Crictl — pinned to match k8s version
-# ============================================================
 ARCH="$(dpkg --print-architecture)"
 case "$ARCH" in
   amd64) CRICTL_ARCH="amd64" ;;
@@ -214,9 +206,6 @@ timeout: 10
 debug: false
 EOF
 
-# ============================================================
-# 9. Cilium CLI — pinned version
-# ============================================================
 echo "Installing Cilium CLI $CILIUM_CLI_VERSION..."
 CLI_ARCH="amd64"
 if [ "$(uname -m)" = "aarch64" ]; then CLI_ARCH="arm64"; fi
@@ -251,8 +240,50 @@ rm -rf helm.tar.gz "linux-${CLI_ARCH}/"
 
 helm version
 
+echo "Building ECR credential provider $ECR_CRED_VERSION from source..."
+# Neither the GitHub release binary nor the registry.k8s.io image exists for v1.32+.
+# Build from the official upstream tag — Go is installed temporarily and removed after.
+
+GO_VERSION="go1.23.8"
+GOARCH_VALUE="$(dpkg --print-architecture)"   # arm64 or amd64
+GO_TARBALL="/tmp/${GO_VERSION}.linux-${GOARCH_VALUE}.tar.gz"
+
+wget -q "https://go.dev/dl/${GO_VERSION}.linux-${GOARCH_VALUE}.tar.gz" -O "${GO_TARBALL}"
+sudo tar -C /usr/local -xzf "${GO_TARBALL}"
+export PATH=$PATH:/usr/local/go/bin
+export GOPATH=/tmp/gopath
+export GOCACHE=/tmp/gocache
+
+git clone --depth 1 --branch "${ECR_CRED_VERSION}" \
+    https://github.com/kubernetes/cloud-provider-aws.git /tmp/cloud-provider-aws
+
+cd /tmp/cloud-provider-aws
+CGO_ENABLED=0 GOOS=linux GOARCH="${GOARCH_VALUE}" \
+    /usr/local/go/bin/go build \
+    -ldflags="-s -w" \
+    -o /tmp/ecr-credential-provider \
+    ./cmd/ecr-credential-provider
+cd -
+
+sudo install -m 0755 /tmp/ecr-credential-provider /usr/local/bin/ecr-credential-provider
+
+# Purge everything the build touched — toolchain, source, module cache, build cache, tarball
+sudo rm -rf \
+    /usr/local/go \
+    "${GO_TARBALL}" \
+    /tmp/cloud-provider-aws \
+    /tmp/ecr-credential-provider \
+    /tmp/gopath \
+    /tmp/gocache \
+    /root/.cache/go-build \
+    /root/go \
+    /home/ubuntu/.cache/go-build \
+    /home/ubuntu/go
+
+ecr-credential-provider version 2>/dev/null || ecr-credential-provider --version 2>/dev/null || echo "ecr-credential-provider installed (no version flag)"
+
 # ============================================================
-# 11. Verify all tools installed correctly
+# 12. Verify all tools installed correctly
 # Fail fast here so bad AMI is never snapshotted
 # ============================================================
 echo "=== Verifying installations ==="
@@ -264,6 +295,7 @@ crictl --version
 cilium version --client
 helm version
 nvme --version
+ecr-credential-provider version 2>/dev/null || echo "ecr-credential-provider installed"
 aws --version 2>/dev/null || echo "AWS CLI — installed separately in Packer"
 
 echo "=== common-ami.sh complete ==="

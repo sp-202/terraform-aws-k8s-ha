@@ -1,9 +1,6 @@
 # Dev / Test environment - smaller instances to save cost
 cluster_name = "k8s-dev-cluster"
 
-# Master node
-master_instance_type = "c7g.2xlarge"
-
 # GP workers
 gp_worker_instance_type = "c6gd.4xlarge"
 

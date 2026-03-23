@@ -327,3 +327,429 @@ helm upgrade --install openebs openebs/openebs \
 **Resolution**:
 - Changed from `user_data = <<-EOF` to `user_data_base64 = base64gzip(local.master_userdata)` in `master.tf`
 - Gzip compression reduces payload by 60-70%, providing ample headroom for future changes
+
+---
+
+# EKS Migration Issues (Post Issue #21)
+
+The following issues were encountered after migrating the control plane from self-managed EC2 master to AWS EKS with self-managed worker nodes.
+
+---
+
+## 22. KubeletConfiguration API version mismatch (v1 vs v1beta1)
+
+**Issue**: Kubelet fails to start with:
+```
+no kind "KubeletConfiguration" is registered for version "kubelet.config.k8s.io/v1"
+```
+
+**Root Cause**:
+- K8s 1.34 kubelet does NOT yet support `kubelet.config.k8s.io/v1` for KubeletConfiguration — only `v1beta1` is registered
+- The bootstrap script was initially written with `v1` assuming 1.34 had graduated it
+
+**Resolution**:
+- Changed `apiVersion` in `/var/lib/kubelet/config.yaml` from `kubelet.config.k8s.io/v1` to `kubelet.config.k8s.io/v1beta1` in `worker-eks-bootstrap.sh`
+
+---
+
+## 23. Missing `interactiveMode` in exec credential plugin
+
+**Issue**: Kubelet fails to start with:
+```
+interactiveMode must be specified for kubelet to use exec authentication plugin
+```
+
+**Root Cause**:
+- K8s 1.34 kubelet requires the `interactiveMode` field in the exec credential config inside kubeconfig
+- Without it, kubelet refuses to initialize the exec-based token provider (`aws eks get-token`)
+
+**Resolution**:
+- Added `interactiveMode: Never` under the `exec:` section in the kubelet kubeconfig in `worker-eks-bootstrap.sh`:
+```yaml
+users:
+- name: kubelet
+  user:
+    exec:
+      apiVersion: client.authentication.k8s.io/v1
+      command: /usr/local/bin/aws
+      interactiveMode: Never
+      args:
+        - eks
+        - get-token
+        - --cluster-name
+        - k8s-dev-cluster
+```
+
+---
+
+## 24. Kubelet stuck silently — `--bootstrap-kubeconfig` incompatible with exec credentials
+
+**Issue**: Kubelet logs one `Failed to connect to apiserver` message with 1-second timeout, then goes completely silent. No further logs. Process sleeping on futex with only 1.05s CPU over 4+ minutes.
+
+**Root Cause**:
+- `--bootstrap-kubeconfig` was pointing to the same exec-credential kubeconfig as `--kubeconfig`
+- This triggered the TLS bootstrap flow, which is fundamentally incompatible with exec-based authentication (aws eks get-token)
+- Kubelet entered an internal retry loop against the bootstrap path, hitting a 1s healthz timeout each cycle, with no logs emitted after the first failure
+- Network was fine (curl to EKS endpoint with CA cert worked), confirming the issue was in kubelet's bootstrap logic, not connectivity
+
+**Diagnosis**:
+- `journalctl -u kubelet` showed only one line then silence
+- `cat /proc/<pid>/stack` showed futex sleep
+- `curl --cacert /etc/kubernetes/pki/ca.crt https://<eks-endpoint>` returned 200 from the node
+- CPU time analysis: 1.05s CPU over 4+ minutes = stuck, not busy-looping
+
+**Resolution**:
+- Removed `--bootstrap-kubeconfig` flag entirely from the kubelet systemd drop-in (`20-eks.conf`)
+- With exec credentials (`aws eks get-token`), kubelet authenticates directly — TLS bootstrap is not needed or supported
+- The golden AMI's base `10-kubeadm.conf` drop-in included `--bootstrap-kubeconfig`; the new `20-eks.conf` overrides it with `ExecStart=` (clear) followed by a clean ExecStart without the flag
+
+---
+
+## 25. Cilium CrashLoopBackOff — BPF masquerade requires enableIPv4Masquerade
+
+**Issue**: Cilium agent pods crash with:
+```
+BPF masquerade requires --enable-ipv4-masquerade="true"
+```
+
+**Root Cause**:
+- `bpf.masquerade=true` was set in the Cilium Helm values for optimal ENI-mode performance
+- However, `enableIPv4Masquerade` defaults to `false` in ENI mode
+- BPF masquerade is an implementation of masquerade — it cannot work if the base masquerade feature is disabled
+
+**Resolution**:
+- Added `--set enableIPv4Masquerade=true` to the Cilium Helm install in `post-cluster-bootstrap.sh`:
+```bash
+helm upgrade --install cilium cilium/cilium \
+  --set enableIPv4Masquerade=true \
+  --set bpf.masquerade=true
+```
+
+---
+
+## 26. kube-proxy ImagePullBackOff — ECR auth failure (not needed with Cilium)
+
+**Issue**: kube-proxy pods stuck in ImagePullBackOff:
+```
+Failed to pull image "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/kube-proxy:v1.34.0-eksbuild.2"
+```
+
+**Root Cause**:
+- EKS automatically creates a kube-proxy DaemonSet that pulls from private ECR
+- The golden AMI does not have the `ecr-credential-provider` binary, so kubelet cannot authenticate to ECR
+- kube-proxy is redundant when Cilium runs with `kubeProxyReplacement=true`
+
+**Resolution**:
+- Deleted kube-proxy DaemonSet and ConfigMap entirely — not needed with Cilium KPR
+- Added deletion as Step 4b in `post-cluster-bootstrap.sh`:
+```bash
+kubectl -n kube-system delete daemonset kube-proxy --ignore-not-found
+kubectl -n kube-system delete configmap kube-proxy --ignore-not-found
+```
+
+---
+
+## 27. CoreDNS ErrImagePull — ECR credential provider missing from golden AMI
+
+**Issue**: CoreDNS pods stuck in ErrImagePull:
+```
+Failed to pull image "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/coredns:v1.12.3-eksbuild.1"
+```
+
+**Root Cause**:
+- Same ECR auth failure as kube-proxy (Issue #26), but CoreDNS cannot simply be deleted — it is required for cluster DNS
+- `ecr-credential-provider` binary is not installed on the golden AMI (`k8s-ubuntu-2404-arm64-golden-v2`)
+- Without it, kubelet has no way to authenticate to private ECR registries
+
+**Workaround** (applied in `worker-eks-bootstrap.sh`):
+- If `ecr-credential-provider` binary is not found, pre-pull the CoreDNS image using containerd CLI with a temporary ECR token:
+```bash
+ECR_PASSWORD=$(aws ecr get-login-password --region "$AWS_REGION")
+ctr -n k8s.io image pull --user "AWS:${ECR_PASSWORD}" \
+  "602401143452.dkr.ecr.${AWS_REGION}.amazonaws.com/eks/coredns:v1.12.3-eksbuild.1"
+```
+
+**Permanent fix**: Added `ecr-credential-provider` binary (from `kubernetes/cloud-provider-aws` releases, pinned to `v1.34.0`) to the golden AMI Packer build in `packer/common-ami.sh` section 11. The bootstrap script (`worker-eks-bootstrap.sh`) detects this binary and configures kubelet's `--image-credential-provider-config` and `--image-credential-provider-bin-dir` flags automatically. The `ctr` pre-pull path remains as a fallback for older AMIs without the binary.
+
+---
+
+## 28. CoreDNS CrashLoopBackOff — DNS forwarding loop with systemd-resolved
+
+**Issue**: CoreDNS pods in CrashLoopBackOff with:
+```
+Loop (127.0.0.1:42583 -> :53) detected for zone "."
+```
+
+**Root Cause**:
+- CoreDNS ConfigMap had `forward . /etc/resolv.conf`
+- On Ubuntu 24.04 nodes running systemd-resolved, `/etc/resolv.conf` is a symlink to `/run/systemd/resolve/stub-resolv.conf` which contains `nameserver 127.0.0.53`
+- `127.0.0.53` (systemd-resolved) forwards DNS to the cluster DNS (CoreDNS via ClusterIP `172.20.0.10`), creating an infinite loop:
+  ```
+  CoreDNS → /etc/resolv.conf → 127.0.0.53 → cluster DNS → CoreDNS → ∞
+  ```
+
+**Resolution**:
+- Patched CoreDNS ConfigMap to forward to VPC DNS resolver instead of `/etc/resolv.conf`
+- VPC DNS is always at VPC CIDR base + 2 = `10.0.0.2`
+- Added as Step 4c in `post-cluster-bootstrap.sh`:
+```bash
+kubectl -n kube-system get configmap coredns -o yaml | \
+  sed 's|forward . /etc/resolv.conf|forward . 10.0.0.2|' | \
+  kubectl apply -f - || true
+kubectl -n kube-system rollout restart deployment coredns || true
+```
+---
+
+## 29. Cilium ENI Allocation Failure — IMDS Hop Limit Too Low
+
+**Issue**: Cilium operator failed to allocate ENIs (Elastic Network Interfaces) for pod secondary IPs, causing critical cluster failure:
+- Cilium agent pods: `CrashLoopBackOff` (timed out waiting for CRD events after 3m0s)
+- CoreDNS: `Pending` (no IPs to schedule)
+- Hubble Relay: `Pending` (same root cause)
+- `CiliumNode` objects: Empty `CILIUMINTERNALIP` column (no IPs allocated to any node)
+
+**Root Cause**:
+The Cilium operator pod needs AWS credentials to call EC2 APIs (`CreateNetworkInterface`, `AttachNetworkInterface`, `AssignPrivateIpAddresses`) to allocate secondary ENIs for pod IPs. The operator obtains credentials from the **node's IAM role via IMDS** (Instance Metadata Service). However, the request path requires crossing a network namespace boundary:
+
+```
+Pod network namespace → Host network namespace → IMDS (169.254.169.254)
+                    ↑ hop 1                    ↑ hop 2
+```
+
+The EC2 instance default `http_put_response_hop_limit` is **1**, allowing only direct requests. Pods need **hop limit 2** to traverse the namespace boundary.
+
+**Result**: IMDS returned 404 ("TTL expired") → operator couldn't get credentials → operator never attempted EC2 API calls (no error logs visible) → cilium-agent had no IPs available → agent timed out waiting for CRD initialization and crashed.
+
+**Operator Logs Evidence**:
+```
+time=2026-03-22T12:50:00.534901907Z level=info msg="Leader re-election complete" module=operator newLeader=ip-10-0-2-105-mtvdl55cm4
+```
+Operator logs ended immediately after leadership election — no ENI allocation activity logged, confirming silent credential failure.
+
+**Fix Applied**:
+Added `metadata_options` to all 4 worker launch templates with `http_put_response_hop_limit = 2`:
+
+**Files modified:**
+- `compute-spark-critical.tf`
+- `compute-k8s-gp.tf`
+- `compute-spark-spot.tf`
+- `compute-minio.tf`
+
+**Change:**
+```hcl
+metadata_options {
+  http_endpoint               = "enabled"
+  http_tokens                 = "required"   # IMDSv2 enforced
+  http_put_response_hop_limit = 2            # allows pods to reach IMDS
+}
+```
+
+**Deployment Steps**:
+1. Run `terraform apply` to update launch templates (creates new version)
+2. Terminate existing worker nodes to force ASG replacement:
+   ```bash
+   aws ec2 terminate-instances --instance-ids <id1> <id2> <id3> <id4> --region us-east-1
+   ```
+3. Wait 5-10 minutes for new nodes to register
+4. Restart Cilium:
+   ```bash
+   kubectl -n kube-system rollout restart daemonset cilium
+   kubectl -n kube-system rollout restart deployment cilium-operator
+   ```
+5. Verify CiliumNode IPs are allocated:
+   ```bash
+   kubectl get ciliumnode -o wide
+   # Should show IPs in CILIUMINTERNALIP column
+   ```
+
+**Why This Matters for EKS**:
+- Cilium ENI mode is optimal for EKS self-managed nodes (AWS-native networking, no VXLAN overhead)
+- Pod IMDS access is required for any AWS SDK client (credentials for application services)
+- IMDSv2 (token-based) is enforced for security; hop limit 2 is still required
+- **Common gotcha** on EKS with CNIs requiring ENI operations (Cilium, AWS VPC CNI if configured with custom ENIs)
+
+---
+
+## 30. ECR Credential Provider Missing from Golden AMI (Build from Source)
+
+**Issue**: Kubelet unable to authenticate to AWS ECR for pulling EKS-managed container images:
+```
+Failed to pull image "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/coredns:v1.12.3-eksbuild.1"
+Failed to pull image "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/kube-proxy:v1.34.0-eksbuild.2"
+```
+
+**Root Cause**:
+- EKS provides managed container images in private AWS ECR registries
+- Kubelet needs the `ecr-credential-provider` binary to dynamically fetch ECR auth tokens via the image credential provider API
+- Neither pre-built binaries nor OCI images exist in public registries for Kubernetes v1.32+ (including v1.34)
+- The golden AMI (`k8s-ubuntu-2404-arm64-golden-v2`) did not include the credential provider, blocking all ECR image pulls
+
+**Initial Workaround** (in `worker-eks-bootstrap.sh`):
+- For nodes without the credential provider, pre-pull the CoreDNS image using containerd CLI with a temporary ECR token:
+```bash
+ECR_PASSWORD=$(aws ecr get-login-password --region "$AWS_REGION")
+ctr -n k8s.io image pull --user "AWS:${ECR_PASSWORD}" \
+  "602401143452.dkr.ecr.${AWS_REGION}.amazonaws.com/eks/coredns:v1.12.3-eksbuild.1"
+```
+This only pulls CoreDNS; other images still fail.
+
+**Permanent Fix** (in `packer/common-ami.sh`, Section 11):
+- Build `ecr-credential-provider` from official upstream source (`kubernetes/cloud-provider-aws`) instead of relying on non-existent pre-built releases
+- Go compiler installed temporarily, used only for the build, then removed to keep the AMI clean
+- Implementation:
+
+```bash
+echo "Building ECR credential provider $ECR_CRED_VERSION from source..."
+
+GO_VERSION="go1.23.8"
+GOARCH_VALUE="$(dpkg --print-architecture)"   # arm64 or amd64
+GO_TARBALL="/tmp/${GO_VERSION}.linux-${GOARCH_VALUE}.tar.gz"
+
+wget -q "https://go.dev/dl/${GO_VERSION}.linux-${GOARCH_VALUE}.tar.gz" -O "${GO_TARBALL}"
+sudo tar -C /usr/local -xzf "${GO_TARBALL}"
+export PATH=$PATH:/usr/local/go/bin
+export GOPATH=/tmp/gopath
+export GOCACHE=/tmp/gocache
+
+git clone --depth 1 --branch "${ECR_CRED_VERSION}" \
+    https://github.com/kubernetes/cloud-provider-aws.git /tmp/cloud-provider-aws
+
+cd /tmp/cloud-provider-aws
+CGO_ENABLED=0 GOOS=linux GOARCH="${GOARCH_VALUE}" \
+    /usr/local/go/bin/go build \
+    -ldflags="-s -w" \
+    -o /tmp/ecr-credential-provider \
+    ./cmd/ecr-credential-provider
+cd -
+
+sudo install -m 0755 /tmp/ecr-credential-provider /usr/local/bin/ecr-credential-provider
+
+# Purge everything the build touched — no Go bloatware in final AMI
+sudo rm -rf \
+    /usr/local/go \
+    "${GO_TARBALL}" \
+    /tmp/cloud-provider-aws \
+    /tmp/ecr-credential-provider \
+    /tmp/gopath \
+    /tmp/gocache \
+    /root/.cache/go-build \
+    /root/go \
+    /home/ubuntu/.cache/go-build \
+    /home/ubuntu/go
+```
+
+**Key Decisions**:
+- **Build from source**: Kubernetes v1.34 has no pre-built release of `ecr-credential-provider`; building is the only reliable solution
+- **Cross-architecture support**: Script detects `dpkg --print-architecture` (arm64 or amd64) to download matching Go toolchain and build with correct `GOARCH`
+- **Clean AMI**: Go compiler and source code removed after build — final binary is ~50MB stripped, no dev toolchain bloat
+- **Pinned versions**: `ECR_CRED_VERSION=v1.34.0` matched to Kubernetes version; `GO_VERSION=go1.23.8` validated stable for this build
+- **Verification**: Final Packer step verifies `ecr-credential-provider version` or `ecr-credential-provider --version` output
+
+**Integration in worker-eks-bootstrap.sh**:
+Once the binary is available in the AMI, `worker-eks-bootstrap.sh` configures kubelet to use it:
+```bash
+cat > /etc/kubernetes/image-credential-provider-config.json <<EOF
+{
+  "providers": [
+    {
+      "name": "ecr-credential-provider",
+      "matchImages": [
+        "*.dkr.ecr.*.amazonaws.com",
+        "*.dkr.ecr.*.amazonaws.com.cn"
+      ],
+      "defaultCacheDuration": "1h",
+      "apiVersion": "credentialprovider.kubelet.k8s.io/v1"
+    }
+  ]
+}
+EOF
+
+# Kubelet flags (in systemd drop-in 20-eks.conf)
+--image-credential-provider-config=/etc/kubernetes/image-credential-provider-config.json \
+--image-credential-provider-bin-dir=/usr/local/bin
+```
+
+**Result**:
+- ✅ CoreDNS, kube-proxy, and all EKS-managed images pull successfully from ECR
+- ✅ No pre-pull workaround needed
+- ✅ Kubelet auto-refreshes ECR tokens every 1 hour (configurable)
+- ✅ AMI remains clean — no Go/build artifacts, only ~50MB stripped binary
+
+**Why This Matters**:
+- **Kubernetes v1.32+ compatibility**: Newer k8s versions remove pre-built credential provider releases; source build is the only path
+- **EKS with self-managed nodes**: This pattern applies to ANY EKS cluster with custom AMIs and private ECR images
+- **Multi-architecture**: Build script handles both ARM64 (Graviton c7g) and x86 (c6i, m5) instances automatically
+---
+
+## 31. Issue: Cilium Cross-Node Endpoint Health Check Failure
+
+**Status**: RESOLVED (2026-03-23)
+
+**Original Symptom**:
+- `cilium-health status` showed only 1/4 nodes reachable
+- Node health check (TCP 4240 on 10.0.2.x) partially working: 1/4 reachable
+- Endpoint health check (TCP 4240 on 10.0.4.x pod IPs) completely broken: 0/1 reachable on all remote nodes
+
+**Root Cause** (IDENTIFIED & FIXED):
+**AWS hypervisor drops cross-node pod traffic due to `source_dest_check=true` (AWS default) on both:**
+1. **Primary ENIs** (node's eth0): Receives packets from secondary ENI IPs (10.0.4.x), hypervisor rejects due to source/dest mismatch
+2. **Secondary ENIs** (Cilium-managed): Cilium not disabling source_dest_check on ENIs it creates
+
+**Solution Applied**:
+
+1. **Primary ENI fix** (in all 4 launch templates: compute-k8s-gp.tf, compute-spark-spot.tf, compute-spark-critical.tf, compute-minio.tf):
+   - Added IMDSv2-based EC2 attribute modification in [worker-eks-bootstrap.sh:29-33](scripts/worker-eks-bootstrap.sh#L29-L33):
+   ```bash
+   aws ec2 modify-instance-attribute --instance-id "$INSTANCE_ID" --no-source-dest-check
+   ```
+   - Runs at node boot, applies to primary ENI only (hypervisor allows cross-node pod traffic)
+
+2. **Secondary ENI fix** (in post-cluster-bootstrap.sh):
+   - Added `eni.disableSourceDestCheck=true` to Cilium Helm values (lines 183, 212)
+   - Tells Cilium to call `ec2:ModifyNetworkInterfaceAttribute` on secondary ENIs it creates
+
+3. **IAM permissions verified** (iam.tf):
+   - `ec2:ModifyInstanceAttribute` — for primary ENI
+   - `ec2:ModifyNetworkInterfaceAttribute` — for secondary ENIs
+   - Both present and working
+
+4. **Infrastructure hardening**:
+   - Added CloudWatch recovery alarm (nat.tf) for fck-nat auto-recovery on host failure
+   - Preserves primary ENI ID → route table entry stays valid
+   - Gzipped user_data in all launch templates (base64encode → base64gzip) for size headroom
+   - Pod subnet sizing (10.0.4.0/24 = 254 IPs) supports up to ~16 nodes at 15 IPs/node
+
+**Remediation Commands** (for running nodes):
+```bash
+# Apply secondary ENI fix
+helm upgrade cilium cilium/cilium --reuse-values --namespace kube-system --set eni.disableSourceDestCheck=true
+
+# Apply primary ENI fix manually (new nodes get it via user-data)
+for id in $(aws ec2 describe-instances --filters "Name=tag:Project,Values=k8s-dev-cluster" "Name=instance-state-name,Values=running" --query "Reservations[*].Instances[*].InstanceId" --output text); do
+  aws ec2 modify-instance-attribute --region us-east-1 --instance-id "$id" --no-source-dest-check
+done
+
+# Restart Cilium to let new ENI settings take effect
+kubectl -n kube-system rollout restart daemonset/cilium
+sleep 60
+kubectl -n kube-system exec -it ds/cilium -c cilium-agent -- cilium-health status
+```
+
+**Verification**:
+- Cross-node pod IP 4240 health check becomes reachable ✓
+- `cilium-health status` shows all nodes reachable ✓
+- Pod-to-pod communication across nodes works ✓
+
+**Changes Made**:
+- **compute-k8s-gp.tf**: user_data base64encode → base64gzip
+- **compute-spark-spot.tf**: user_data base64encode → base64gzip
+- **compute-spark-critical.tf**: user_data base64encode → base64gzip
+- **compute-minio.tf**: user_data base64encode → base64gzip
+- **scripts/post-cluster-bootstrap.sh**: Added `eni.disableSourceDestCheck=true` (already present in worker-eks-bootstrap.sh)
+- **nat.tf**: Added CloudWatch recovery alarm
+- No changes needed to security.tf, network.tf, iam.tf — all permissions/rules already in place
+
+**Related Commits**:
+- `fec3795`: Build ECR credential provider from source and fix pod IMDS access for Cilium ENI
+- `b378136`: Replace AWS NAT Gateway with fck-nat cost-optimized instance + post-cluster-bootstrap restructure
+- `d824513`: cilium config changed and updated (Helm values fix)

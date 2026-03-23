@@ -1,3 +1,4 @@
+# MinIO dedicated storage nodes (EKS self-managed)
 resource "aws_launch_template" "minio_worker" {
   name_prefix   = "${var.cluster_name}-minio-"
   image_id      = data.aws_ami.golden.id
@@ -6,7 +7,7 @@ resource "aws_launch_template" "minio_worker" {
 
   network_interfaces {
     associate_public_ip_address = false
-    security_groups             = [aws_security_group.worker_sg.id]
+    security_groups             = [aws_security_group.worker_sg.id, aws_eks_cluster.main.vpc_config[0].cluster_security_group_id]
   }
   iam_instance_profile {
     name = aws_iam_instance_profile.node_profile.name
@@ -19,56 +20,47 @@ resource "aws_launch_template" "minio_worker" {
       delete_on_termination = true
     }
   }
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 2
+  }
 
-  user_data = base64encode(<<-BASH
+  user_data = base64gzip(<<-BASH
               #!/bin/bash
               set -ex
               exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
-              
+
               echo "Starting MinIO Dedicated Worker User Data..."
-              TOKEN=$(curl -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
-              INSTANCE_ID=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" -s http://169.254.169.254/latest/meta-data/instance-id)
 
               echo "${base64encode(file("${path.module}/scripts/common-runtime.sh"))}" | base64 -d > /root/common-runtime.sh
-              chmod +x /root/common-runtime.sh
+              echo "${base64encode(file("${path.module}/scripts/worker-eks-bootstrap.sh"))}" | base64 -d > /root/worker-eks-bootstrap.sh
+              chmod +x /root/common-runtime.sh /root/worker-eks-bootstrap.sh
+
               /root/common-runtime.sh
-              
+
               if [ -d "/mnt/spark-nvme" ]; then
                 sudo mkdir -p /mnt/spark-nvme/minio
               fi
 
-              # Wait for master to be ready
-              sleep 60
+              sed -i 's|__CLUSTER_NAME__|${var.cluster_name}|g' /root/worker-eks-bootstrap.sh
+              sed -i 's|__AWS_REGION__|${var.aws_region}|g' /root/worker-eks-bootstrap.sh
+              sed -i 's|__NODE_NAME__|minio-worker|g' /root/worker-eks-bootstrap.sh
+              sed -i 's|__EKS_ENDPOINT__|${aws_eks_cluster.main.endpoint}|g' /root/worker-eks-bootstrap.sh
+              sed -i 's|__EKS_CA_DATA__|${aws_eks_cluster.main.certificate_authority[0].data}|g' /root/worker-eks-bootstrap.sh
+              sed -i 's|__CLUSTER_DNS__|${cidrhost(aws_eks_cluster.main.kubernetes_network_config[0].service_ipv4_cidr, 10)}|g' /root/worker-eks-bootstrap.sh
 
-              aws ec2 modify-instance-attribute --instance-id $INSTANCE_ID --no-source-dest-check --region ${var.aws_region}
-
-              echo "Joining Cluster..."
-              MAX_RETRIES=3
-              RETRY_COUNT=0
-              JOIN_SUCCESS=false
-
-              while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-                  if sudo kubeadm join ${aws_instance.master.private_ip}:6443 --token ${local.kubeadm_token} --discovery-token-unsafe-skip-ca-verification --node-name minio-worker-$INSTANCE_ID; then
-                      JOIN_SUCCESS=true
-                      break
-                  fi
-                  RETRY_COUNT=$((RETRY_COUNT+1))
-                  sleep 30
-              done
-
-              if [ "$JOIN_SUCCESS" = false ]; then
-                  aws ec2 terminate-instances --instance-ids $INSTANCE_ID --region ${var.aws_region}
-                  exit 1
-              fi
+              /root/worker-eks-bootstrap.sh
               BASH
   )
 
   tag_specifications {
     resource_type = "instance"
     tags = {
-      Project = var.cluster_name
-      Name    = "minio-worker"
-      Role    = "minio-worker"
+      Project                                     = var.cluster_name
+      Name                                        = "minio-worker"
+      Role                                        = "minio-worker"
+      "kubernetes.io/cluster/${var.cluster_name}" = "owned"
     }
   }
   lifecycle {
@@ -91,5 +83,10 @@ resource "aws_autoscaling_group" "minio_worker" {
     value               = "minio-worker"
     propagate_at_launch = true
   }
-  depends_on = [aws_instance.master]
+  tag {
+    key                 = "kubernetes.io/cluster/${var.cluster_name}"
+    value               = "owned"
+    propagate_at_launch = true
+  }
+  depends_on = [aws_eks_cluster.main, aws_eks_access_entry.nodes, aws_route_table_association.private]
 }

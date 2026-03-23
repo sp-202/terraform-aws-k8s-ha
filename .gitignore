@@ -9,3 +9,5 @@ kubeconfig
 *.pem
 .DS_Store
 kubeconfig.yaml
+.terraform.tfstate.lock.info
+.terraform.lock.hcl
