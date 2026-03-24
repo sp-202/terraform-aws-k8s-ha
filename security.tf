@@ -125,16 +125,16 @@ resource "aws_security_group_rule" "worker_cilium_health_from_pod_subnet" {
   description       = "Cilium Health from pod subnet"
 }
 
-# Cloudflare Tunnel QUIC (UDP/7844) — loss-tolerant protocol prevents Error 1033 on packet loss
-resource "aws_security_group_rule" "worker_cloudflare_tunnel_quic" {
-  type              = "ingress"
-  from_port         = 7844
-  to_port           = 7844
-  protocol          = "udp"
-  cidr_blocks       = ["0.0.0.0/0"]
-  security_group_id = aws_security_group.worker_sg.id
-  description       = "Cloudflare Tunnel QUIC protocol (UDP/7844)"
-}
+# # Cloudflare Tunnel QUIC (UDP/7844) — loss-tolerant protocol prevents Error 1033 on packet loss
+# resource "aws_security_group_rule" "worker_cloudflare_tunnel_quic" {
+#   type              = "egress"
+#   from_port         = 7844
+#   to_port           = 7844
+#   protocol          = "udp"
+#   cidr_blocks       = ["0.0.0.0/0"]
+#   security_group_id = aws_security_group.worker_sg.id
+#   description       = "Cloudflare Tunnel QUIC protocol (UDP/7844)"
+# }
 
 resource "aws_security_group_rule" "worker_egress_all" {
   type              = "egress"
