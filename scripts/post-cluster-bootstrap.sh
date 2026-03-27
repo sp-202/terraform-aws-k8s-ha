@@ -381,7 +381,8 @@ helm upgrade --install argocd argo/argo-cd \
   --set server.service.type=ClusterIP \
   --set dex.enabled=false \
   --set notifications.enabled=false \
-  --set applicationSet.enabled=true
+  --set applicationSet.enabled=true \
+  --set configs.cm."kustomize\.buildOptions"="--enable-helm"
 
 echo "Waiting for ArgoCD server to become ready..."
 kubectl -n argocd rollout status deployment/argocd-server --timeout=300s
@@ -407,8 +408,6 @@ spec:
     repoURL: https://github.com/sp-202/cloud-native-bigdata-stack.git
     targetRevision: HEAD
     path: k8s-platform-v2
-    kustomize:
-      enableHelm: true
   destination:
     server: https://kubernetes.default.svc
     namespace: default
