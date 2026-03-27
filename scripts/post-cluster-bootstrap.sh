@@ -331,10 +331,130 @@ subjects:
     namespace: kube-system
 EOF
 
+# -------------------------------------------------------
+# Step 9 — Install ArgoCD (GitOps controller)
+#
+# ArgoCD will take over continuous delivery of k8s-platform-v2.
+# Exposed via Traefik IngressRoute through the Cloudflare tunnel.
+# Access: https://argocd.<CF_DOMAIN>  (after deploy-v2.sh runs Traefik)
+# Initial password: `argocd admin initial-password -n argocd`
+# -------------------------------------------------------
+echo "==> Installing ArgoCD..."
+helm repo add argo https://argoproj.github.io/argo-helm 2>/dev/null || helm repo update argo
+helm repo update
+
+helm upgrade --install argocd argo/argo-cd \
+  --namespace argocd --create-namespace \
+  --version 7.8.23 \
+  --timeout 10m0s \
+  --set server.extraArgs[0]="--insecure" \
+  --set configs.params."server\.insecure"=true \
+  --set server.service.type=ClusterIP \
+  --set dex.enabled=false \
+  --set notifications.enabled=false \
+  --set applicationSet.enabled=true
+
+echo "Waiting for ArgoCD server to become ready..."
+kubectl -n argocd rollout status deployment/argocd-server --timeout=300s
+
+# -------------------------------------------------------
+# Step 9a — Create ArgoCD Application pointing at k8s-platform-v2
+#
+# This tells ArgoCD to sync everything under k8s-platform-v2/
+# from the git repo. After this, ArgoCD owns the app stack.
+# deploy-v2.sh handles one-time secrets (CF credentials, global-config.env)
+# but ArgoCD continuously reconciles the manifests.
+# -------------------------------------------------------
+echo "==> Creating ArgoCD Application (k8s-platform-v2)..."
+kubectl apply -f - <<'ARGOEOF'
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: k8s-platform-v2
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:sp-202/cloud-native-bigdata-stack.git
+    targetRevision: HEAD
+    path: k8s-platform-v2
+    kustomize:
+      enableHelm: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
+  ignoreDifferences:
+    # Secrets injected by deploy-v2.sh — ArgoCD should not diff or prune them
+    - group: ""
+      kind: Secret
+      name: cloudflared-credentials
+      namespace: cloudflare
+      jsonPointers:
+        - /data
+    - group: ""
+      kind: ConfigMap
+      name: global-config
+      namespace: default
+      jsonPointers:
+        - /data
+ARGOEOF
+
+# -------------------------------------------------------
+# Step 9b — Traefik IngressRoute for ArgoCD UI
+#
+# Added to kube-system so it's deployed alongside Traefik
+# before the app stack. CF_DOMAIN is substituted at apply time
+# by deploy-v2.sh, but we emit the template here so it exists
+# in the cluster immediately after bootstrap.
+# Users can reach ArgoCD at: https://argocd.<CF_DOMAIN>
+# -------------------------------------------------------
+echo "==> Creating ArgoCD IngressRoute template..."
+kubectl apply -f - <<'INGRESSEOF'
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: argocd-server
+  namespace: argocd
+spec:
+  entryPoints:
+    - web
+    - websecure
+  routes:
+    - match: Host(`argocd.__ARGOCD_DOMAIN__`)
+      kind: Rule
+      services:
+        - name: argocd-server
+          port: 80
+INGRESSEOF
+
 echo ""
 echo "=================================================="
 echo "Post-cluster bootstrap complete!"
 echo "=================================================="
 echo "Run: kubectl get nodes -o wide"
 echo "Run: kubectl -n kube-system get pods"
+echo ""
+echo "ArgoCD:"
+echo "  UI:      https://argocd.<your-CF_DOMAIN>  (after deploy-v2.sh patches the IngressRoute)"
+echo "  CLI:     argocd login argocd.<your-CF_DOMAIN> --grpc-web"
+echo "  Initial password: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d"
+echo ""
+echo "Next step: run deploy-v2.sh to set Cloudflare secrets + patch the ArgoCD IngressRoute domain"
 echo ""
