@@ -297,7 +297,13 @@ spec:
               while true; do
                 ROLE=$(kubectl get node "$NODE_NAME" -o jsonpath='{.metadata.labels.node-role}' 2>/dev/null)
                 if [ -n "$ROLE" ]; then
-                  kubectl label node "$NODE_NAME" "node-role.kubernetes.io/${ROLE}=" --overwrite 2>/dev/null || true
+                  if kubectl label node "$NODE_NAME" "node-role.kubernetes.io/${ROLE}=" --overwrite 2>&1; then
+                    echo "node/${NODE_NAME} labeled with node-role.kubernetes.io/${ROLE}"
+                  else
+                    echo "node/${NODE_NAME} label failed, will retry"
+                  fi
+                else
+                  echo "node/${NODE_NAME} has no node-role label yet, will retry"
                 fi
                 sleep 30
               done
@@ -315,7 +321,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["nodes"]
-    verbs: ["get", "list", "patch"]
+    verbs: ["get", "list", "patch", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -330,6 +336,30 @@ subjects:
     name: node-auto-labeler
     namespace: kube-system
 EOF
+
+# Apply node-role.kubernetes.io/ labels immediately from the bootstrap script
+# (DaemonSet does this on a loop, but nodes may not be Ready yet when it starts)
+echo "==> Applying node-role.kubernetes.io/ labels to all Ready nodes..."
+for i in $(seq 1 24); do
+  READY_NODES=$(kubectl get nodes --field-selector=status.conditions[?(@.type=="Ready")].status=True -o name 2>/dev/null || true)
+  if [ -z "$READY_NODES" ]; then
+    echo "  Waiting for nodes to be Ready... ($i/24)"
+    sleep 5
+    continue
+  fi
+  ALL_LABELED=true
+  for NODE in $READY_NODES; do
+    ROLE=$(kubectl get "$NODE" -o jsonpath='{.metadata.labels.node-role}' 2>/dev/null)
+    if [ -n "$ROLE" ]; then
+      kubectl label "$NODE" "node-role.kubernetes.io/${ROLE}=" --overwrite
+    else
+      ALL_LABELED=false
+    fi
+  done
+  $ALL_LABELED && break
+  sleep 5
+done
+echo "Node labeling complete."
 
 # -------------------------------------------------------
 # Step 9 — Install ArgoCD (GitOps controller)
