@@ -3,6 +3,15 @@ set -e
 
 echo "Starting deployment of K3s Cluster on AWS (ASG Mode)..."
 
+# Generate SSH key if not already present
+if [ ! -f ~/.ssh/id_ed25519 ]; then
+  echo "==> Generating SSH key..."
+  ssh-keygen -t ed25519 -C "subhodeeppal64@gmail.com" -f ~/.ssh/id_ed25519 -N ""
+  echo "SSH key generated: ~/.ssh/id_ed25519"
+else
+  echo "SSH key already exists, skipping keygen."
+fi
+
 # Load local secrets (not tracked in git)
 # Required: CF_TUNNEL_CREDENTIALS=<base64-encoded tunnel JSON>
 #   Get it with: base64 -w0 ~/.cloudflared/<tunnel-id>.json
