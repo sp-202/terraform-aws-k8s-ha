@@ -31,7 +31,7 @@ variable "private_subnet_cidr" {
 variable "pod_subnet_cidr" {
   description = "CIDR block for the pods in k8s"
   type        = string
-  default     = "10.0.4.0/24"   # 512 IPs, separate from nodes
+  default     = "10.0.4.0/23" # 512 IPs, separate from nodes
 }
 
 
