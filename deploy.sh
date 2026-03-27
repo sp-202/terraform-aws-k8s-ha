@@ -81,7 +81,7 @@ AWS_REGION=$(terraform output -raw aws_region 2>/dev/null || echo "us-east-1")
 POD_SUBNET_ID=$(terraform output -raw pod_subnet_id)
 
 chmod +x ./scripts/post-cluster-bootstrap.sh
-./scripts/post-cluster-bootstrap.sh "$CLUSTER_NAME" "$AWS_REGION" "$POD_SUBNET_ID" "${CF_TUNNEL_CREDENTIALS:-}"
+./scripts/post-cluster-bootstrap.sh "$CLUSTER_NAME" "$AWS_REGION" "$POD_SUBNET_ID" "${CF_TUNNEL_CREDENTIALS:-}" "${CF_DOMAIN:-}"
 
 echo "---------------------------------------------------"
 echo "Deployment Complete!"

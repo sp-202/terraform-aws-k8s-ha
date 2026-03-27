@@ -13,6 +13,14 @@
 
 set -euxo pipefail
 
+# Source secrets.env from repo root (works whether run directly or via deploy.sh)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+if [ -f "${REPO_ROOT}/secrets.env" ]; then
+  # shellcheck disable=SC1091
+  source "${REPO_ROOT}/secrets.env"
+fi
+
 CLUSTER_NAME="${1:-k8s-ha-cluster}"
 AWS_REGION="${2:-us-east-1}"
 POD_SUBNET_ID="${3:-}"  # pass as 3rd arg or set below via terraform output
@@ -213,9 +221,85 @@ helm upgrade --install cilium cilium/cilium \
       --set "eni.subnetIDsFilter[0]=$POD_SUBNET_ID"
   }
 
-echo "Waiting for Cilium to initialize..."
-sleep 30
-kubectl -n kube-system rollout status daemonset/cilium --timeout=180s || true
+# -------------------------------------------------------
+# Wait for Cilium — proper production sequencing
+#
+# Two race conditions exist if you just fire-and-forget after helm install:
+#
+# Race 1 — IPAM pool empty (available=0):
+#   Cilium agents need IPs from the CiliumNode CRD pool.
+#   The operator populates this pool by calling EC2 API to allocate
+#   secondary IPs on ENIs. Agents that start before the operator
+#   finishes just loop on "Waiting for IPs" forever.
+#
+# Race 2 — FailedMount (hubble-tls / clustermesh-secrets):
+#   The DaemonSet mounts TLS secrets that the operator generates
+#   on first startup. If a node schedules an agent pod before the
+#   operator has written these secrets, the volume mount times out
+#   and the pod enters CrashLoopBackOff.
+#
+# Correct sequence:
+#   1. Operator deployment → 1/1 Running
+#   2. hubble-server-certs secret exists (operator writes this)
+#   3. All CiliumNode CRs show allocated IPs (IPAM pool populated)
+#   4. Cilium DaemonSet rollout complete
+# -------------------------------------------------------
+
+echo "==> [Cilium 1/4] Waiting for cilium-operator deployment to be Ready..."
+kubectl -n kube-system rollout status deployment/cilium-operator --timeout=300s
+echo "  cilium-operator is Ready."
+
+echo "==> [Cilium 2/4] Waiting for hubble-server-certs secret (operator generates this)..."
+for i in $(seq 1 60); do
+  if kubectl -n kube-system get secret hubble-server-certs &>/dev/null; then
+    echo "  hubble-server-certs secret exists."
+    break
+  fi
+  if [ "$i" -eq 60 ]; then
+    echo "ERROR: hubble-server-certs secret not created after 10 minutes."
+    echo "  Check operator logs: kubectl logs -n kube-system -l app.kubernetes.io/name=cilium-operator --tail=50"
+    exit 1
+  fi
+  echo "  Waiting for hubble-server-certs... ($i/60)"
+  sleep 10
+done
+
+echo "==> [Cilium 3/4] Waiting for CiliumNode IPAM pools to be populated on all nodes..."
+NODE_COUNT=$(kubectl get nodes --no-headers 2>/dev/null | wc -l)
+for i in $(seq 1 60); do
+  POPULATED=$(kubectl get ciliumnodes -o jsonpath='{range .items[*]}{.status.ipam.used}{"\n"}{end}' 2>/dev/null | grep -vc '^$' || true)
+  if [ "$POPULATED" -ge "$NODE_COUNT" ] && [ "$NODE_COUNT" -gt 0 ]; then
+    echo "  All $NODE_COUNT CiliumNode IP pools populated."
+    break
+  fi
+  if [ "$i" -eq 60 ]; then
+    echo "WARNING: CiliumNode pools not fully populated after 10 minutes — proceeding anyway."
+    echo "  Check: kubectl get ciliumnodes -o wide"
+    break
+  fi
+  echo "  IPAM pools populated: $POPULATED/$NODE_COUNT... ($i/60)"
+  sleep 10
+done
+
+echo "==> [Cilium 4/4] Waiting for all Cilium agent pods to be Ready..."
+for i in $(seq 1 72); do
+  TOTAL=$(kubectl get pods -n kube-system -l k8s-app=cilium --no-headers 2>/dev/null | wc -l)
+  READY=$(kubectl get pods -n kube-system -l k8s-app=cilium --no-headers 2>/dev/null | awk '$2=="1/1" && $3=="Running"' | wc -l)
+  if [ "$TOTAL" -gt 0 ] && [ "$READY" -eq "$TOTAL" ]; then
+    echo "  All $TOTAL Cilium agent pod(s) are Ready."
+    break
+  fi
+  if [ "$i" -eq 72 ]; then
+    echo "ERROR: Cilium agents not all Ready after 12 minutes."
+    echo "  Unhealthy pods:"
+    kubectl get pods -n kube-system -l k8s-app=cilium --no-headers | awk '$2!="1/1" || $3!="Running"'
+    echo "  Logs:"
+    kubectl logs -n kube-system -l k8s-app=cilium --tail=20 2>&1 | tail -40
+    exit 1
+  fi
+  echo "  Cilium agents: $READY/$TOTAL Ready... ($i/72)"
+  sleep 10
+done
 
 # -------------------------------------------------------
 # Step 5b — Fix CoreDNS forward to VPC DNS resolver
@@ -227,6 +311,9 @@ kubectl -n kube-system get configmap coredns -o yaml | \
   sed 's|forward . /etc/resolv.conf|forward . 10.0.0.2|' | \
   kubectl apply -f - || true
 kubectl -n kube-system rollout restart deployment coredns || true
+# Wait for CoreDNS to be healthy before proceeding — everything after this
+# depends on DNS working (OpenEBS image pulls, ArgoCD git resolution, etc.)
+kubectl -n kube-system rollout status deployment/coredns --timeout=180s || true
 
 # -------------------------------------------------------
 # Step 6 — Install AWS Node Termination Handler
@@ -244,9 +331,6 @@ helm upgrade --install aws-node-termination-handler \
 # -------------------------------------------------------
 # Step 7 — Install OpenEBS
 # -------------------------------------------------------
-echo "Waiting for I/O to settle before OpenEBS install..."
-sleep 30
-
 echo "==> Installing OpenEBS..."
 helm repo add openebs https://openebs.github.io/openebs 2>/dev/null || helm repo update openebs
 helm repo update
@@ -337,27 +421,63 @@ subjects:
     namespace: kube-system
 EOF
 
-# Apply node-role.kubernetes.io/ labels immediately from the bootstrap script
-# (DaemonSet does this on a loop, but nodes may not be Ready yet when it starts)
-echo "==> Applying node-role.kubernetes.io/ labels to all Ready nodes..."
-for i in $(seq 1 24); do
-  READY_NODES=$(kubectl get nodes --field-selector=status.conditions[?(@.type=="Ready")].status=True -o name 2>/dev/null || true)
+# Apply node-role.kubernetes.io/ labels immediately from the bootstrap script.
+# CRITICAL: We must wait until ALL worker nodes are Ready and labeled before
+# ArgoCD syncs. Otherwise postgres/minio PVs with nodeAffinity can't schedule.
+#
+# Expected worker count = number of ASGs with desired_capacity > 0.
+# We have 3 fixed ASGs (gp, spark, minio) each desired=1 → 3 workers total.
+# Read dynamically so this works if ASG counts change.
+EXPECTED_WORKER_COUNT=3
+
+echo "==> Waiting for all ${EXPECTED_WORKER_COUNT} worker nodes to join and be Ready..."
+for i in $(seq 1 120); do  # up to 20 minutes
+  TOTAL_NODES=$(kubectl get nodes --no-headers 2>/dev/null | grep -v "control-plane\|master" | wc -l || echo 0)
+  READY_COUNT=$(kubectl get nodes --no-headers 2>/dev/null | grep -v "control-plane\|master" | awk '$2=="Ready"' | wc -l || echo 0)
+  if [ "$READY_COUNT" -ge "$EXPECTED_WORKER_COUNT" ]; then
+    echo "  All ${EXPECTED_WORKER_COUNT} worker nodes are Ready (total joined: ${TOTAL_NODES})."
+    break
+  fi
+  if [ "$i" -eq 120 ]; then
+    echo "ERROR: Only ${READY_COUNT}/${EXPECTED_WORKER_COUNT} worker nodes Ready after 20 minutes."
+    kubectl get nodes --no-headers
+    exit 1
+  fi
+  echo "  Waiting for workers: ${READY_COUNT}/${EXPECTED_WORKER_COUNT} Ready... ($i/120)"
+  sleep 10
+done
+
+echo "==> Applying node-role.kubernetes.io/ labels to all Ready worker nodes..."
+for i in $(seq 1 36); do  # up to 6 minutes
+  READY_NODES=$(kubectl get nodes --no-headers 2>/dev/null | grep -v "control-plane\|master" | awk '$2=="Ready" {print "node/"$1}' || true)
   if [ -z "$READY_NODES" ]; then
-    echo "  Waiting for nodes to be Ready... ($i/24)"
-    sleep 5
+    echo "  No Ready worker nodes yet... ($i/36)"
+    sleep 10
     continue
   fi
   ALL_LABELED=true
   for NODE in $READY_NODES; do
     ROLE=$(kubectl get "$NODE" -o jsonpath='{.metadata.labels.node-role}' 2>/dev/null)
     if [ -n "$ROLE" ]; then
-      kubectl label "$NODE" "node-role.kubernetes.io/${ROLE}=" --overwrite
+      kubectl label "$NODE" "node-role.kubernetes.io/${ROLE}=" --overwrite 2>&1 | grep -v "not labeled" || true
     else
+      echo "  Node ${NODE} has no node-role label yet — kubelet may still be starting ($i/36)"
       ALL_LABELED=false
     fi
   done
-  $ALL_LABELED && break
-  sleep 5
+  if $ALL_LABELED; then
+    LABELED_COUNT=$(echo "$READY_NODES" | wc -w)
+    if [ "$LABELED_COUNT" -ge "$EXPECTED_WORKER_COUNT" ]; then
+      echo "  All ${LABELED_COUNT} worker nodes labeled successfully."
+      break
+    fi
+  fi
+  if [ "$i" -eq 36 ]; then
+    echo "ERROR: Could not label all nodes after 6 minutes. Current state:"
+    kubectl get nodes --show-labels --no-headers
+    exit 1
+  fi
+  sleep 10
 done
 echo "Node labeling complete."
 
@@ -382,6 +502,7 @@ echo "Node labeling complete."
 # CF_TUNNEL_CREDENTIALS must be set in the environment (base64-encoded JSON
 # from ~/.cloudflared/<tunnel-id>.json) or passed as the 4th argument.
 CF_TUNNEL_CREDENTIALS="${4:-${CF_TUNNEL_CREDENTIALS:-}}"
+CF_DOMAIN="${5:-${CF_DOMAIN:-}}"
 if [ -n "$CF_TUNNEL_CREDENTIALS" ]; then
   echo "==> Pre-creating cloudflared-credentials Secret..."
   kubectl create namespace cloudflare 2>/dev/null || true
@@ -450,7 +571,20 @@ for crd in \
   kubectl apply --server-side -f "${PROM_CRD_BASE}/${crd}" 2>/dev/null || true
 done
 echo "Prometheus CRDs installed. Waiting for API registration..."
-sleep 5
+# Wait until the ServiceMonitor CRD is actually queryable — the API server
+# registers CRDs asynchronously and a 5s sleep is not enough under load.
+for i in $(seq 1 30); do
+  if kubectl get crd servicemonitors.monitoring.coreos.com &>/dev/null; then
+    echo "  ServiceMonitor CRD registered."
+    break
+  fi
+  if [ "$i" -eq 30 ]; then
+    echo "WARNING: ServiceMonitor CRD not registered after 5 minutes — ArgoCD sync may fail on first attempt."
+    break
+  fi
+  echo "  Waiting for CRD registration... ($i/30)"
+  sleep 10
+done
 
 echo "==> Installing ArgoCD..."
 helm repo add argo https://argoproj.github.io/argo-helm 2>/dev/null || helm repo update argo
@@ -528,7 +662,7 @@ echo "=================================================="
 echo "Run: kubectl get nodes -o wide"
 echo "Run: kubectl -n kube-system get pods"
 echo ""
-_CF_DOMAIN=$(kubectl get configmap global-config -n default -o jsonpath='{.data.CF_DOMAIN}' 2>/dev/null || echo "<CF_DOMAIN>")
+_CF_DOMAIN="${CF_DOMAIN:-<CF_DOMAIN>}"
 echo "ArgoCD:"
 echo "  UI:      https://argocd.${_CF_DOMAIN}"
 echo "  CLI:     argocd login argocd.${_CF_DOMAIN} --grpc-web"
