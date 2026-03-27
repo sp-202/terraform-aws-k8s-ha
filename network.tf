@@ -29,10 +29,10 @@ resource "aws_subnet" "public" {
   map_public_ip_on_launch = true
 
   tags = {
-    Name                                            = "${var.cluster_name}-public-subnet"
-    "cilium.io/no-eni-allocation"                   = "true"
-    "kubernetes.io/cluster/${var.cluster_name}"     = "owned"
-    "kubernetes.io/role/elb"                        = "1"
+    Name                                        = "${var.cluster_name}-public-subnet"
+    "cilium.io/no-eni-allocation"               = "true"
+    "kubernetes.io/cluster/${var.cluster_name}" = "owned"
+    "kubernetes.io/role/elb"                    = "1"
   }
 }
 
@@ -43,10 +43,10 @@ resource "aws_subnet" "private" {
   availability_zone = var.availability_zone
 
   tags = {
-    Name                                            = "${var.cluster_name}-private-subnet-1"
-    "cilium.io/no-eni-allocation"                   = "true"
-    "kubernetes.io/cluster/${var.cluster_name}"     = "owned"
-    "kubernetes.io/role/internal-elb"               = "1"
+    Name                                        = "${var.cluster_name}-private-subnet-1"
+    "cilium.io/no-eni-allocation"               = "true"
+    "kubernetes.io/cluster/${var.cluster_name}" = "owned"
+    "kubernetes.io/role/internal-elb"           = "1"
   }
 }
 
@@ -57,10 +57,10 @@ resource "aws_subnet" "pods" {
   availability_zone = var.availability_zone
 
   tags = {
-    Name                                            = "${var.cluster_name}-pod-subnet"
-    "kubernetes.io/cluster/${var.cluster_name}"     = "owned"
-    "kubernetes.io/role/internal-elb"               = "1"
-    "cilium-pod-subnet"                             = "1"
+    Name                                        = "${var.cluster_name}-pod-subnet"
+    "kubernetes.io/cluster/${var.cluster_name}" = "owned"
+    "kubernetes.io/role/internal-elb"           = "1"
+    "cilium-pod-subnet"                         = "1"
   }
 }
 

@@ -606,26 +606,26 @@ echo "Waiting for ArgoCD server to become ready..."
 kubectl -n argocd rollout status deployment/argocd-server --timeout=300s
 
 # -------------------------------------------------------
-# Step 9a — Create ArgoCD Application pointing at k8s-platform-v2
+# Step 9a — Create ArgoCD Application pointing at big-data-platform
 #
 # Uses HTTPS for the public repo — no deploy key needed.
 # global-config.env in the repo is the single source of truth
 # for all non-secret config (CF_DOMAIN, CF_TUNNEL_ID, images, etc.).
 # The cloudflared-credentials Secret is managed out-of-band (Step 9-pre).
 # -------------------------------------------------------
-echo "==> Creating ArgoCD Application (k8s-platform-v2)..."
+echo "==> Creating ArgoCD Application (big-data-platform)..."
 kubectl apply -f - <<'ARGOEOF'
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: k8s-platform-v2
+  name: big-data-platform
   namespace: argocd
 spec:
   project: default
   source:
     repoURL: https://github.com/sp-202/cloud-native-bigdata-stack.git
-    targetRevision: HEAD
-    path: k8s-platform-v2
+    targetRevision: beta-aws
+    path: big-data-platform
   destination:
     server: https://kubernetes.default.svc
     namespace: default
