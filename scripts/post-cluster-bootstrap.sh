@@ -334,11 +334,40 @@ EOF
 # -------------------------------------------------------
 # Step 9 — Install ArgoCD (GitOps controller)
 #
-# ArgoCD will take over continuous delivery of k8s-platform-v2.
-# Exposed via Traefik IngressRoute through the Cloudflare tunnel.
-# Access: https://argocd.<CF_DOMAIN>  (after deploy-v2.sh runs Traefik)
-# Initial password: `argocd admin initial-password -n argocd`
+# ArgoCD continuously reconciles k8s-platform-v2 from git.
+# All config (domains, images, tunnel ID) lives in global-config.env
+# committed to the repo — no deploy-v2.sh needed for manifests.
+#
+# Secrets that cannot be in git must be pre-created here before
+# ArgoCD's first sync so pods don't crashloop waiting for them:
+#   - cloudflared-credentials  (tunnel JSON, namespace: cloudflare)
+#
+# Access: https://argocd.<CF_DOMAIN>  (routed via cloudflared → Traefik)
+# Initial password: kubectl -n argocd get secret argocd-initial-admin-secret \
+#                     -o jsonpath='{.data.password}' | base64 -d
 # -------------------------------------------------------
+
+# Step 9-pre: Pre-create the cloudflared-credentials Secret so the first
+# ArgoCD sync doesn't leave cloudflared pods in CreateContainerConfigError.
+# CF_TUNNEL_CREDENTIALS must be set in the environment (base64-encoded JSON
+# from ~/.cloudflared/<tunnel-id>.json) or passed as the 4th argument.
+CF_TUNNEL_CREDENTIALS="${4:-${CF_TUNNEL_CREDENTIALS:-}}"
+if [ -n "$CF_TUNNEL_CREDENTIALS" ]; then
+  echo "==> Pre-creating cloudflared-credentials Secret..."
+  kubectl create namespace cloudflare 2>/dev/null || true
+  CF_TUNNEL_CREDS_JSON=$(echo "$CF_TUNNEL_CREDENTIALS" | base64 -d)
+  kubectl create secret generic cloudflared-credentials \
+    --namespace cloudflare \
+    --from-literal=credentials.json="$CF_TUNNEL_CREDS_JSON" \
+    --dry-run=client -o yaml | kubectl apply -f -
+  echo "cloudflared-credentials Secret created."
+else
+  echo "WARNING: CF_TUNNEL_CREDENTIALS not set — skipping cloudflared-credentials Secret."
+  echo "         Cloudflared pods will stay in CreateContainerConfigError until you create it manually:"
+  echo "         kubectl create secret generic cloudflared-credentials -n cloudflare \\"
+  echo "           --from-literal=credentials.json='\$(cat ~/.cloudflared/<tunnel-id>.json)'"
+fi
+
 echo "==> Installing ArgoCD..."
 helm repo add argo https://argoproj.github.io/argo-helm 2>/dev/null || helm repo update argo
 helm repo update
@@ -360,10 +389,10 @@ kubectl -n argocd rollout status deployment/argocd-server --timeout=300s
 # -------------------------------------------------------
 # Step 9a — Create ArgoCD Application pointing at k8s-platform-v2
 #
-# This tells ArgoCD to sync everything under k8s-platform-v2/
-# from the git repo. After this, ArgoCD owns the app stack.
-# deploy-v2.sh handles one-time secrets (CF credentials, global-config.env)
-# but ArgoCD continuously reconciles the manifests.
+# Uses HTTPS for the public repo — no deploy key needed.
+# global-config.env in the repo is the single source of truth
+# for all non-secret config (CF_DOMAIN, CF_TUNNEL_ID, images, etc.).
+# The cloudflared-credentials Secret is managed out-of-band (Step 9-pre).
 # -------------------------------------------------------
 echo "==> Creating ArgoCD Application (k8s-platform-v2)..."
 kubectl apply -f - <<'ARGOEOF'
@@ -372,12 +401,10 @@ kind: Application
 metadata:
   name: k8s-platform-v2
   namespace: argocd
-  annotations:
-    argocd.argoproj.io/sync-wave: "0"
 spec:
   project: default
   source:
-    repoURL: git@github.com:sp-202/cloud-native-bigdata-stack.git
+    repoURL: https://github.com/sp-202/cloud-native-bigdata-stack.git
     targetRevision: HEAD
     path: k8s-platform-v2
     kustomize:
@@ -401,48 +428,15 @@ spec:
         factor: 2
         maxDuration: 3m
   ignoreDifferences:
-    # Secrets injected by deploy-v2.sh — ArgoCD should not diff or prune them
+    # cloudflared-credentials is pre-created out-of-band (Step 9-pre)
+    # ArgoCD must not prune or diff this Secret's data
     - group: ""
       kind: Secret
       name: cloudflared-credentials
       namespace: cloudflare
       jsonPointers:
         - /data
-    - group: ""
-      kind: ConfigMap
-      name: global-config
-      namespace: default
-      jsonPointers:
-        - /data
 ARGOEOF
-
-# -------------------------------------------------------
-# Step 9b — Traefik IngressRoute for ArgoCD UI
-#
-# Added to kube-system so it's deployed alongside Traefik
-# before the app stack. CF_DOMAIN is substituted at apply time
-# by deploy-v2.sh, but we emit the template here so it exists
-# in the cluster immediately after bootstrap.
-# Users can reach ArgoCD at: https://argocd.<CF_DOMAIN>
-# -------------------------------------------------------
-echo "==> Creating ArgoCD IngressRoute template..."
-kubectl apply -f - <<'INGRESSEOF'
-apiVersion: traefik.io/v1alpha1
-kind: IngressRoute
-metadata:
-  name: argocd-server
-  namespace: argocd
-spec:
-  entryPoints:
-    - web
-    - websecure
-  routes:
-    - match: Host(`argocd.__ARGOCD_DOMAIN__`)
-      kind: Rule
-      services:
-        - name: argocd-server
-          port: 80
-INGRESSEOF
 
 echo ""
 echo "=================================================="
@@ -452,9 +446,10 @@ echo "Run: kubectl get nodes -o wide"
 echo "Run: kubectl -n kube-system get pods"
 echo ""
 echo "ArgoCD:"
-echo "  UI:      https://argocd.<your-CF_DOMAIN>  (after deploy-v2.sh patches the IngressRoute)"
-echo "  CLI:     argocd login argocd.<your-CF_DOMAIN> --grpc-web"
+echo "  UI:      https://argocd.<CF_DOMAIN from global-config.env>"
+echo "  CLI:     argocd login argocd.<CF_DOMAIN> --grpc-web"
 echo "  Initial password: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d"
 echo ""
-echo "Next step: run deploy-v2.sh to set Cloudflare secrets + patch the ArgoCD IngressRoute domain"
+echo "Next: ArgoCD will auto-sync k8s-platform-v2 from git."
+echo "      Update k8s-platform-v2/04-configs/global-config.env in git to change any config."
 echo ""
