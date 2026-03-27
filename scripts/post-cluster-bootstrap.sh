@@ -399,6 +399,29 @@ helm upgrade --install traefik traefik/traefik \
 kubectl patch svc traefik -n kube-system \
   -p '{"spec":{"ports":[{"name":"traefik","port":9000,"targetPort":8080}]}}' || true
 
+echo "==> Pre-installing Prometheus Operator CRDs (ServiceMonitor, PodMonitor, etc.)..."
+# cloudflared-servicemonitor.yaml uses ServiceMonitor CRD which is bundled inside
+# kube-prometheus-stack helmChart (includeCRDs: true). ArgoCD applies all resources
+# in a single wave — CRDs and CRs land at the same time which causes:
+#   'no matches for kind "ServiceMonitor" in version "monitoring.coreos.com/v1"'
+# Pre-installing CRDs here ensures they are registered before ArgoCD's first sync.
+PROM_CRD_BASE="https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/v0.71.2/example/prometheus-operator-crd"
+for crd in \
+  monitoring.coreos.com_alertmanagerconfigs.yaml \
+  monitoring.coreos.com_alertmanagers.yaml \
+  monitoring.coreos.com_podmonitors.yaml \
+  monitoring.coreos.com_probes.yaml \
+  monitoring.coreos.com_prometheusagents.yaml \
+  monitoring.coreos.com_prometheuses.yaml \
+  monitoring.coreos.com_prometheusrules.yaml \
+  monitoring.coreos.com_scrapeconfigs.yaml \
+  monitoring.coreos.com_servicemonitors.yaml \
+  monitoring.coreos.com_thanosrulers.yaml; do
+  kubectl apply --server-side -f "${PROM_CRD_BASE}/${crd}" 2>/dev/null || true
+done
+echo "Prometheus CRDs installed. Waiting for API registration..."
+sleep 5
+
 echo "==> Installing ArgoCD..."
 helm repo add argo https://argoproj.github.io/argo-helm 2>/dev/null || helm repo update argo
 helm repo update
