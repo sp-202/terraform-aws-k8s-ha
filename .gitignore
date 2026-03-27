@@ -11,3 +11,5 @@ kubeconfig
 kubeconfig.yaml
 .terraform.tfstate.lock.info
 .terraform.lock.hcl
+secrets.env
+*.env

@@ -3,6 +3,19 @@ set -e
 
 echo "Starting deployment of K3s Cluster on AWS (ASG Mode)..."
 
+# Load local secrets (not tracked in git)
+# Required: CF_TUNNEL_CREDENTIALS=<base64-encoded tunnel JSON>
+#   Get it with: base64 -w0 ~/.cloudflared/<tunnel-id>.json
+if [ -f secrets.env ]; then
+  # shellcheck disable=SC1091
+  source secrets.env
+  echo "Loaded secrets.env"
+else
+  echo "WARNING: secrets.env not found."
+  echo "  Create it with: echo \"CF_TUNNEL_CREDENTIALS=\$(base64 -w0 ~/.cloudflared/<tunnel-id>.json)\" > secrets.env"
+  echo "  Cloudflared pods will need the secret created manually after bootstrap."
+fi
+
 echo "---------------------------------------------------"
 echo "Phase 1: Provisioning Infrastructure with Terraform"
 echo "---------------------------------------------------"
@@ -59,7 +72,7 @@ AWS_REGION=$(terraform output -raw aws_region 2>/dev/null || echo "us-east-1")
 POD_SUBNET_ID=$(terraform output -raw pod_subnet_id)
 
 chmod +x ./scripts/post-cluster-bootstrap.sh
-./scripts/post-cluster-bootstrap.sh "$CLUSTER_NAME" "$AWS_REGION" "$POD_SUBNET_ID"
+./scripts/post-cluster-bootstrap.sh "$CLUSTER_NAME" "$AWS_REGION" "$POD_SUBNET_ID" "${CF_TUNNEL_CREDENTIALS:-}"
 
 echo "---------------------------------------------------"
 echo "Deployment Complete!"
