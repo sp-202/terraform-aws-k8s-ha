@@ -368,6 +368,37 @@ else
   echo "           --from-literal=credentials.json='\$(cat ~/.cloudflared/<tunnel-id>.json)'"
 fi
 
+echo "==> Installing Traefik (required before ArgoCD sync — IngressRoute CRDs must exist)..."
+helm repo add traefik https://traefik.github.io/charts 2>/dev/null || true
+helm repo update traefik
+helm upgrade --install traefik traefik/traefik \
+  --namespace kube-system \
+  --timeout 5m0s \
+  --set "ports.web.port=80" \
+  --set "ports.websecure.port=443" \
+  --set "ports.traefik.port=9000" \
+  --set "ports.metrics.port=9101" \
+  --set "global.checkNewVersion=false" \
+  --set "global.sendAnonymousUsage=false" \
+  --set "additionalArguments[0]=--api.insecure=true" \
+  --set "additionalArguments[1]=--api.dashboard=true" \
+  --set "tolerations[0].key=node.cilium.io/agent-not-ready" \
+  --set "tolerations[0].operator=Exists" \
+  --set "tolerations[0].effect=NoSchedule" \
+  --set "service.type=ClusterIP" \
+  --set "ingressRoute.dashboard.enabled=false" \
+  --set "securityContext.runAsUser=65532" \
+  --set "securityContext.runAsGroup=65532" \
+  --set "securityContext.runAsNonRoot=true" \
+  --set "securityContext.readOnlyRootFilesystem=true" \
+  --set "securityContext.allowPrivilegeEscalation=false" \
+  --set "securityContext.capabilities.drop[0]=ALL" \
+  --set "podSecurityContext.runAsUser=65532" \
+  --set "podSecurityContext.runAsGroup=65532" \
+  --set "podSecurityContext.runAsNonRoot=true"
+kubectl patch svc traefik -n kube-system \
+  -p '{"spec":{"ports":[{"name":"traefik","port":9000,"targetPort":8080}]}}' || true
+
 echo "==> Installing ArgoCD..."
 helm repo add argo https://argoproj.github.io/argo-helm 2>/dev/null || helm repo update argo
 helm repo update
