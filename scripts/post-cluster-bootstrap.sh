@@ -267,7 +267,7 @@ done
 echo "==> [Cilium 3/4] Waiting for CiliumNode IPAM pools to be populated on all nodes..."
 NODE_COUNT=$(kubectl get nodes --no-headers 2>/dev/null | wc -l)
 for i in $(seq 1 60); do
-  POPULATED=$(kubectl get ciliumnodes -o jsonpath='{range .items[*]}{.status.ipam.used}{"\n"}{end}' 2>/dev/null | grep -vc '^$' || true)
+  POPULATED=$(kubectl get ciliumnodes -o jsonpath='{range .items[*]}{.status.ipam.available}{"\n"}{end}' 2>/dev/null | grep -vc '^$' || true)
   if [ "$POPULATED" -ge "$NODE_COUNT" ] && [ "$NODE_COUNT" -gt 0 ]; then
     echo "  All $NODE_COUNT CiliumNode IP pools populated."
     break
