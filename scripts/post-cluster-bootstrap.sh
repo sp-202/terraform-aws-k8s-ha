@@ -624,7 +624,7 @@ spec:
   project: default
   source:
     repoURL: https://github.com/sp-202/cloud-native-bigdata-stack.git
-    targetRevision: beta-aws
+    targetRevision: main
     path: big-data-platform
   destination:
     server: https://kubernetes.default.svc
